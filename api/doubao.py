@@ -3,8 +3,10 @@ from typing import Dict, List
 
 from volcenginesdkarkruntime import Ark
 
+from api.base_api import BaseApi
 
-class Doubao:
+
+class Doubao(BaseApi):
     def __init__(self) -> None:
         api_key, access_point = self._get_credentials()
         self.access_point = access_point
