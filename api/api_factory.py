@@ -31,29 +31,35 @@ class ApiFactory:
     
     def _create_minimal_config(self, credential_file: str):
         """创建最小化配置文件，包含所有可用服务商"""
-        config = configparser.ConfigParser()
+        # 直接写入文件内容，完全控制输出格式
+        lines = []
         
         # 添加系统配置
-        config.add_section("default_provider")
-        config.set("default_provider", "#", "系统配置")
-        config.set("default_provider", "PROVIDER", "doubao")
-        config.set("default_provider", "#", "默认使用的服务商名称")
+        lines.append("[default_provider]")
+        lines.append("# 系统配置")
+        lines.append("# 默认使用的服务商名称")
+        lines.append("PROVIDER = doubao")
+        lines.append("")
         
         # 遍历所有注册的服务商类，根据参数定义生成配置
         for provider_name, provider_class in self._provider_classes.items():
             section_name = provider_name.upper()
-            config.add_section(section_name)
+            lines.append(f"[{section_name}]")
             
             # 获取参数定义
             params = provider_class.get_params()
             
             for param in params:
-                config.set(section_name, "#", param.description)
+                # 添加描述注释
+                lines.append(f"# {param.description}")
+                # 添加配置项
                 default_value = "" if param.default is None else str(param.default)
-                config.set(section_name, param.to_config_key(), default_value)
+                lines.append(f"{param.to_config_key()} = {default_value}")
+            
+            lines.append("")
         
         with open(credential_file, "w", encoding="utf-8") as f:
-            config.write(f)
+            f.write("\n".join(lines))
     
     def _load_config(self):
         """从配置文件加载配置，并进行校验"""
@@ -124,27 +130,35 @@ class ApiFactory:
     
     def _ensure_provider_config(self, provider_name: str, credential_file: str):
         """确保服务商配置段存在，不存在则创建"""
-        config = configparser.ConfigParser()
-        config.read(credential_file, encoding="utf-8")
+        # 读取现有文件内容
+        if os.path.exists(credential_file):
+            with open(credential_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        else:
+            lines = []
         
         section_name = provider_name.upper()
-        if not config.has_section(section_name):
-            config.add_section(section_name)
-            
+        section_exists = any(f"[{section_name}]" in line for line in lines)
+        
+        if not section_exists:
             # 查找对应的服务商类
             provider_class = self._provider_classes.get(provider_name.lower())
             if provider_class:
+                # 添加新段
+                lines.append(f"\n[{section_name}]\n")
+                
                 # 根据参数定义生成配置项
                 params = provider_class.get_params()
                 for param in params:
-                    config.set(section_name, "#", param.description)
+                    lines.append(f"# {param.description}\n")
                     default_value = "" if param.default is None else str(param.default)
-                    config.set(section_name, param.to_config_key(), default_value)
-            
-            with open(credential_file, "w", encoding="utf-8") as f:
-                config.write(f)
-            
-            raise UserWarning(f"已添加 {provider_name} 配置段到 {credential_file}，请填入凭据信息!")
+                    lines.append(f"{param.to_config_key()} = {default_value}\n")
+                
+                # 写回文件
+                with open(credential_file, "w", encoding="utf-8") as f:
+                    f.writelines(lines)
+                
+                raise UserWarning(f"已添加 {provider_name} 配置段到 {credential_file}，请填入凭据信息!")
     
     def _register_default_providers(self):
         """注册默认的服务商"""

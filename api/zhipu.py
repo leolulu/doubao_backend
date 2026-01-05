@@ -18,7 +18,7 @@ class Zhipu(BaseApi):
                 description="API 密钥"
             ),
             ProviderParam(
-                name="access_point",
+                name="model",
                 param_type=ParamType.STRING,
                 required=True,
                 description="模型名称（如 glm-4.7）"
@@ -27,24 +27,24 @@ class Zhipu(BaseApi):
                 name="use_coding_endpoint",
                 param_type=ParamType.BOOLEAN,
                 required=False,
-                default=False,
+                default=True,
                 description="是否使用 Coding 专用端点"
             )
         ]
     
-    def __init__(self, api_key: str, access_point: str, use_coding_endpoint: bool = False) -> None:
+    def __init__(self, api_key: str, model: str, use_coding_endpoint: bool = False) -> None:
         """
         初始化智谱AI客户端
         
         Args:
             api_key: API密钥
-            access_point: 模型名称，如 "glm-4.7"
+            model: 模型名称，如 "glm-4.7"
             use_coding_endpoint: 是否使用Coding专用端点，默认为False
                                 如果为True，使用 https://open.bigmodel.cn/api/coding/paas/v4
                                 如果为False，使用 https://open.bigmodel.cn/api/paas/v4/
         """
         self.api_key = api_key
-        self.access_point = access_point
+        self.model = model
         self.use_coding_endpoint = use_coding_endpoint
         
         # 根据配置选择不同的端点
@@ -62,7 +62,7 @@ class Zhipu(BaseApi):
         }
         
         data = {
-            "model": self.access_point,
+            "model": self.model,
             "messages": messages,
             "temperature": 1.0
         }
