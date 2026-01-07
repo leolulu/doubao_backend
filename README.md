@@ -26,9 +26,9 @@ pip install -r requirements.txt
 首次运行时，程序会自动生成 `credentials.config` 文件，请填入你的凭证信息：
 
 ```ini
-[default_provider]
+[designated_provider]
 # 系统配置
-# 默认使用的服务商名称
+# 指定使用的服务商名称
 PROVIDER = doubao
 
 [DOUBAO]
@@ -274,30 +274,21 @@ class NewProvider(BaseApi):
 
 ### 步骤 2: 在 ApiFactory 中注册
 
-编辑 `api/api_factory.py`，在 `_register_default_provider_classes` 方法中添加注册：
+编辑 `api/api_factory.py`，在 `_register_provider_classes` 方法中添加注册：
 
 ```python
 from api.new_provider import NewProvider
 
 class ApiFactory:
-    def _register_default_provider_classes(self):
-        """注册默认的服务商类"""
+    def _register_provider_classes(self):
+        """注册可用的服务商类"""
         self._provider_classes["doubao"] = Doubao
         self._provider_classes["zhipu"] = Zhipu
         self._provider_classes["deepseek"] = DeepSeek
         self._provider_classes["new_provider"] = NewProvider  # 添加这一行
 ```
 
-同时在 `_register_default_providers` 方法中注册：
-
-```python
-def _register_default_providers(self):
-    """注册默认的服务商"""
-    self._register_provider("doubao", Doubao)
-    self._register_provider("zhipu", Zhipu)
-    self._register_provider("deepseek", DeepSeek)
-    self._register_provider("new_provider", NewProvider)  # 添加这一行
-```
+**注意**：现在系统只注册配置文件中指定的服务商，不需要手动注册所有服务商实例。
 
 ### 步骤 3: 配置服务商（自动生成）
 
@@ -330,10 +321,10 @@ curl -X POST http://localhost:11301/ \
 
 配置文件使用 INI 格式，包含以下部分：
 
-#### [default_provider] - 系统配置
+#### [designated_provider] - 系统配置
 
 ```ini
-PROVIDER = doubao  # 默认使用的服务商名称
+PROVIDER = doubao  # 指定使用的服务商名称
 ```
 
 #### [DOUBAO] - 豆包配置
@@ -414,7 +405,7 @@ def new_endpoint():
 
 ### Q: 如何切换不同的 AI 服务商？
 
-A: 在请求中添加 `provider` 参数，或者在 `credentials.config` 的 `[default_provider]` 段中设置 `PROVIDER`。
+A: 在请求中添加 `provider` 参数，或者在 `credentials.config` 的 `[designated_provider]` 段中设置 `PROVIDER`。
 
 ### Q: 如何清除会话历史？
 

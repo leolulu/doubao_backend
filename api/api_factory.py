@@ -13,18 +13,18 @@ class ApiFactory:
     
     def __init__(self):
         self._clients: Dict[str, BaseApi] = {}
-        self._default_provider: str = "doubao"
+        self._designated_provider: str = "doubao"
         self._credentials: Dict[str, Any] = {
-            "default_provider": "doubao"
+            "designated_provider": "doubao"
         }
         # 存储服务商类，用于配置生成和校验
         self._provider_classes: Dict[str, Type[BaseApi]] = {}
-        self._register_default_provider_classes()
+        self._register_provider_classes()
         self._load_config()
-        self._register_default_providers()
+        self._register_designated_provider()
     
-    def _register_default_provider_classes(self):
-        """注册默认的服务商类"""
+    def _register_provider_classes(self):
+        """注册可用的服务商类"""
         self._provider_classes["doubao"] = Doubao
         self._provider_classes["zhipu"] = Zhipu
         self._provider_classes["deepseek"] = DeepSeek
@@ -35,9 +35,9 @@ class ApiFactory:
         lines = []
         
         # 添加系统配置
-        lines.append("[default_provider]")
+        lines.append("[designated_provider]")
         lines.append("# 系统配置")
-        lines.append("# 默认使用的服务商名称")
+        lines.append("# 指定使用的服务商名称")
         lines.append("PROVIDER = doubao")
         lines.append("")
         
@@ -73,23 +73,28 @@ class ApiFactory:
             config = configparser.ConfigParser()
             config.read(credential_file, encoding="utf-8")
             
-            # 读取所有服务商配置
-            for section in config.sections():
-                if section != "default_provider":
-                    section_lower = section.lower()
-                    
-                    # 查找对应的服务商类
-                    provider_class = self._provider_classes.get(section_lower)
-                    if not provider_class:
-                        continue
-                    
+            # 读取指定的服务商
+            if config.has_section("designated_provider"):
+                provider = config.get("designated_provider", "PROVIDER", fallback="doubao").strip('"').strip()
+                if provider:
+                    self._credentials["designated_provider"] = provider
+            
+            self._designated_provider = self._credentials["designated_provider"]
+            
+            # 只校验指定的服务商配置
+            section_name = self._designated_provider.upper()
+            section_lower = self._designated_provider.lower()
+            
+            if config.has_section(section_name):
+                # 查找对应的服务商类
+                provider_class = self._provider_classes.get(section_lower)
+                if provider_class:
                     # 解析参数 - 读取所有配置项
                     provider_config = {}
                     params = provider_class.get_params()
-                    param_names = {p.name for p in params}
                     
                     # 读取配置文件中的所有键值对
-                    for config_key, raw_value in config.items(section):
+                    for config_key, raw_value in config.items(section_name):
                         # 跳过注释（以 # 开头的键）
                         if config_key.startswith("#"):
                             continue
@@ -108,18 +113,12 @@ class ApiFactory:
                     # 校验配置
                     is_valid, errors = provider_class.validate_config(provider_config)
                     if not is_valid:
-                        error_msg = f"服务商 [{section}] 配置错误:\n" + "\n".join(f"  - {e}" for e in errors)
+                        error_msg = f"服务商 [{section_name}] 配置错误:\n" + "\n".join(f"  - {e}" for e in errors)
                         raise ValueError(error_msg)
                     
                     self._credentials[section_lower] = provider_config
-            
-            # 读取默认服务商
-            if config.has_section("default_provider"):
-                provider = config.get("default_provider", "PROVIDER", fallback="doubao").strip('"').strip()
-                if provider:
-                    self._credentials["default_provider"] = provider
-            
-            self._default_provider = self._credentials["default_provider"]
+            else:
+                raise ValueError(f"配置文件中未找到服务商 [{section_name}] 的配置段")
             
         except ValueError:
             # 重新抛出配置校验错误
@@ -160,11 +159,18 @@ class ApiFactory:
                 
                 raise UserWarning(f"已添加 {provider_name} 配置段到 {credential_file}，请填入凭据信息!")
     
-    def _register_default_providers(self):
-        """注册默认的服务商"""
-        self._register_provider("doubao", Doubao)
-        self._register_provider("zhipu", Zhipu)
-        self._register_provider("deepseek", DeepSeek)
+    def _register_designated_provider(self):
+        """注册指定的服务商（只注册配置文件中指定的服务商）"""
+        provider_mapping = {
+            "doubao": Doubao,
+            "zhipu": Zhipu,
+            "deepseek": DeepSeek
+        }
+        
+        # 只注册指定的服务商
+        provider_name = self._designated_provider.lower()
+        if provider_name in provider_mapping:
+            self._register_provider(provider_name, provider_mapping[provider_name])
     
     def _register_provider(self, name: str, client_class: Type[BaseApi], **kwargs):
         """内部注册方法，自动处理配置和校验"""
@@ -221,7 +227,7 @@ class ApiFactory:
         获取指定服务商的客户端实例
         
         Args:
-            provider: 服务商名称，如果为 None 则使用默认服务商
+            provider: 服务商名称，如果为 None 则使用指定的服务商
         
         Returns:
             对应的客户端实例
@@ -230,7 +236,10 @@ class ApiFactory:
             ValueError: 当指定的服务商不存在时抛出
         """
         if provider is None:
-            provider = self._default_provider
+            provider = self._designated_provider
+        
+        # 将 provider 转换为小写以实现大小写不敏感
+        provider = provider.lower()
         
         if provider not in self._clients:
             available_providers = ", ".join(self._clients.keys())
@@ -240,9 +249,9 @@ class ApiFactory:
         
         return self._clients[provider]
     
-    def set_default_provider(self, provider: str):
+    def set_designated_provider(self, provider: str):
         """
-        设置默认服务商
+        设置指定的服务商
         
         Args:
             provider: 服务商名称
@@ -250,21 +259,24 @@ class ApiFactory:
         Raises:
             ValueError: 当指定的服务商不存在时抛出
         """
+        # 将 provider 转换为小写以实现大小写不敏感
+        provider = provider.lower()
+        
         if provider not in self._clients:
             available_providers = ", ".join(self._clients.keys())
             raise ValueError(
-                f"无法设置默认服务商 '{provider}'，可用的服务商: {available_providers}"
+                f"无法设置服务商 '{provider}'，可用的服务商: {available_providers}"
             )
-        self._default_provider = provider
+        self._designated_provider = provider
     
-    def get_default_provider(self) -> str:
+    def get_designated_provider(self) -> str:
         """
-        获取当前默认服务商名称
+        获取当前指定的服务商名称
         
         Returns:
-            默认服务商名称
+            指定的服务商名称
         """
-        return self._default_provider
+        return self._designated_provider
     
     def list_providers(self) -> list:
         """
