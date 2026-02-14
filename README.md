@@ -1,10 +1,10 @@
 # 多 AI 服务商网关服务
 
-一个支持多 AI 服务商的对话 API 网关服务，基于 Flask 构建。支持豆包、智谱、DeepSeek 等多个 AI 服务商，提供统一的 RESTful API 接口。
+一个支持多 AI 服务商的对话 API 网关服务，基于 Flask 构建。支持豆包、智谱、DeepSeek、MiniMax 等多个 AI 服务商，提供统一的 RESTful API 接口。
 
 ## 功能特性
 
-- ✅ 支持多 AI 服务商（豆包、智谱、DeepSeek）
+- ✅ 支持多 AI 服务商（豆包、智谱、DeepSeek、MiniMax）
 - ✅ 会话管理和历史记录
 - ✅ RESTful API 接口（GET/POST）
 - ✅ 可扩展架构，轻松添加新的 AI 服务商
@@ -47,9 +47,15 @@ USE_CODING_ENDPOINT = False
 
 [DEEPSEEK]
 # API 密钥
-API_KEY = 
+API_KEY =
 # 模型名称（如 deepseek-chat 或 deepseek-reasoner）
-MODEL = 
+MODEL =
+
+[MINIMAX]
+# API 密钥
+API_KEY =
+# 模型名称（如 MiniMax-M2.5）
+MODEL =
 ```
 
 ### 3. 启动服务
@@ -110,6 +116,14 @@ curl -X POST http://localhost:11301/ \
     "user_message": "你好",
     "provider": "deepseek"
   }'
+
+# 使用 MiniMax
+curl -X POST http://localhost:11301/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_message": "你好",
+    "provider": "minimax"
+  }'
 ```
 
 ### API 端点
@@ -150,6 +164,20 @@ curl -X POST http://localhost:11301/ \
 **配置参数：**
 - `API_KEY`: API 密钥（必填）
 - `MODEL`: 模型名称，如 `deepseek-chat` 或 `deepseek-reasoner`（必填）
+
+### MiniMax
+
+使用 REST API 调用 MiniMax（OpenAI 兼容格式）。
+
+**配置参数：**
+- `API_KEY`: API 密钥（必填）
+- `MODEL`: 模型名称，如 `MiniMax-M2.5`（必填）
+
+**支持的模型：**
+- `MiniMax-M2.5`（上下文 204,800）
+- `MiniMax-M2.5-highspeed`
+- `MiniMax-M2.1` / `MiniMax-M2.1-highspeed`
+- `MiniMax-M2`
 
 ## 架构说明
 
@@ -197,10 +225,10 @@ curl -X POST http://localhost:11301/ \
                 │
          ┌──────┴──────┬──────────┐
          │             │          │
-┌────────▼─────┐ ┌────▼──────┐ ┌─▼──────────┐
-│   Doubao     │ │  Zhipu    │ │  DeepSeek  │
-│  (SDK 调用)   │ │  (REST)   │ │  (REST)    │
-└──────────────┘ └───────────┘ └────────────┘
+┌────────▼─────┐ ┌────▼──────┐ ┌─▼──────────┐ ┌──▼────────┐
+│   Doubao     │ │  Zhipu    │ │  DeepSeek  │ │ MiniMax   │
+│  (SDK 调用)   │ │  (REST)   │ │  (REST)    │ │  (REST)  │
+└──────────────┘ └───────────┘ └─────────────┘ └──────────┘
 ```
 
 ### 参数系统
@@ -285,6 +313,7 @@ class ApiFactory:
         self._provider_classes["doubao"] = Doubao
         self._provider_classes["zhipu"] = Zhipu
         self._provider_classes["deepseek"] = DeepSeek
+        self._provider_classes["minimax"] = MiniMax
         self._provider_classes["new_provider"] = NewProvider  # 添加这一行
 ```
 
@@ -349,6 +378,13 @@ API_KEY = "你的DeepSeek API密钥"
 MODEL = "deepseek-chat"  # 或 deepseek-reasoner
 ```
 
+#### [MINIMAX] - MiniMax 配置
+
+```ini
+API_KEY = "你的MiniMax API密钥"
+MODEL = "MiniMax-M2.5"
+```
+
 ## 项目结构
 
 ```
@@ -362,7 +398,8 @@ doubao_backend/
 │   ├── param_schema.py       # 参数定义和校验模块
 │   ├── doubao.py             # 豆包 API 实现
 │   ├── zhipu.py              # 智谱 AI API 实现
-│   └── deepseek.py           # DeepSeek API 实现
+│   ├── deepseek.py           # DeepSeek API 实现
+│   └── minimax.py            # MiniMax API 实现
 ├── models/
 │   ├── message.py            # 消息模型
 │   └── session_manager.py    # 会话管理器
@@ -413,7 +450,7 @@ A: 设置 `preserve` 参数为 `false`，或者创建新的会话 ID。
 
 ### Q: 支持哪些 AI 服务商？
 
-A: 目前支持豆包（Doubao）、智谱 AI（Zhipu）和 DeepSeek。你可以按照扩展指南添加新的服务商。
+A: 目前支持豆包（Doubao）、智谱 AI（Zhipu）、DeepSeek 和 MiniMax。你可以按照扩展指南添加新的服务商。
 
 ### Q: 如何设置系统提示词？
 

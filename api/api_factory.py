@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Type
 from api.base_api import BaseApi
 from api.deepseek import DeepSeek
 from api.doubao import Doubao
+from api.minimax import MiniMax
 from api.zhipu import Zhipu
 
 
@@ -28,6 +29,7 @@ class ApiFactory:
         self._provider_classes["doubao"] = Doubao
         self._provider_classes["zhipu"] = Zhipu
         self._provider_classes["deepseek"] = DeepSeek
+        self._provider_classes["minimax"] = MiniMax
     
     def _create_minimal_config(self, credential_file: str):
         """创建最小化配置文件，包含所有可用服务商"""
@@ -164,7 +166,8 @@ class ApiFactory:
         provider_mapping = {
             "doubao": Doubao,
             "zhipu": Zhipu,
-            "deepseek": DeepSeek
+            "deepseek": DeepSeek,
+            "minimax": MiniMax
         }
         
         # 只注册指定的服务商
