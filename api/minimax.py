@@ -1,4 +1,5 @@
-from typing import Dict, List
+import re
+from typing import Dict, List, Tuple
 
 import requests
 
@@ -19,6 +20,9 @@ class MiniMax(BaseApi):
         "MiniMax-M2.1-highspeed",
         "MiniMax-M2",
     ]
+
+    # think 标签正则表达式
+    THINK_PATTERN = re.compile(r'<think>.*?</think>', re.DOTALL)
 
     @classmethod
     def get_params(cls) -> List[ProviderParam]:
@@ -49,19 +53,18 @@ class MiniMax(BaseApi):
         self.api_key = api_key
         self.model = model
         self.base_url = self.BASE_URL
+        self._last_raw_content: str = ""  # 保存最后一次原始响应（用于历史记录）
 
-    def reason(self, messages: List[Dict[str, str]]) -> str:
+    def _call_api(self, messages: List[Dict[str, str]], reasoning_split: bool = True) -> Dict:
         """
-        调用 MiniMax API 进行对话补全（OpenAI 兼容格式）
+        调用 MiniMax API
 
         Args:
-            messages: 对话消息列表，格式为 [{"role": "user", "content": "..."}]
+            messages: 对话消息列表
+            reasoning_split: 是否分离思维内容
 
         Returns:
-            模型返回的回复内容
-
-        Raises:
-            Exception: 当 API 调用失败时抛出异常
+            API 响应结果
         """
         url = f"{self.base_url}/chat/completions"
 
@@ -72,13 +75,59 @@ class MiniMax(BaseApi):
 
         data = {
             "model": self.model,
-            "messages": messages
+            "messages": messages,
+            "reasoning_split": reasoning_split
         }
 
         response = requests.post(url, headers=headers, json=data)
 
         if response.status_code == 200:
-            result = response.json()
-            return result['choices'][0]['message']['content']
+            return response.json()
         else:
             raise Exception(f"MiniMax API 调用失败: {response.status_code}, {response.text}")
+
+    @staticmethod
+    def _strip_think_tags(content: str) -> str:
+        """移除 content 中的 think 标签"""
+        return MiniMax.THINK_PATTERN.sub('', content).strip()
+
+    def reason(self, messages: List[Dict[str, str]]) -> str:
+        """
+        调用 MiniMax API 进行对话补全（OpenAI 兼容格式）
+
+        Args:
+            messages: 对话消息列表，格式为 [{"role": "user", "content": "..."}]
+
+        Returns:
+            模型返回的回复内容（不含 think 标签）
+
+        Raises:
+            Exception: 当 API 调用失败时抛出异常
+        """
+        result = self._call_api(messages, reasoning_split=True)
+        content = result['choices'][0]['message']['content']
+        # 保存原始内容到属性，供 session_manager 获取用于历史记录
+        self._last_raw_content = content
+        return self._strip_think_tags(content)
+
+    def reason_with_raw_response(self, messages: List[Dict[str, str]]) -> Tuple[str, str]:
+        """
+        调用 MiniMax API，返回原始内容和清理后的内容
+
+        用于保存对话历史时保留完整的思维链内容。
+
+        Args:
+            messages: 对话消息列表
+
+        Returns:
+            (原始内容, 清理后的内容) 元组
+            原始内容包含 think 标签，用于保持思维链连续性
+            清理后的内容不包含 think 标签，用于返回给用户
+
+        Raises:
+            Exception: 当 API 调用失败时抛出异常
+        """
+        result = self._call_api(messages, reasoning_split=True)
+        content = result['choices'][0]['message']['content']
+        cleaned_content = self._strip_think_tags(content)
+        return content, cleaned_content
