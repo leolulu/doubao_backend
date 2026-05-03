@@ -1,3 +1,6 @@
 credentials.config
 
 __pycache__/
+
+
+.opencode/

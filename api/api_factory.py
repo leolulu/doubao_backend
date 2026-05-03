@@ -6,6 +6,7 @@ from api.base_api import BaseApi
 from api.deepseek import DeepSeek
 from api.doubao import Doubao
 from api.minimax import MiniMax
+from api.modelscope import ModelScope
 from api.zhipu import Zhipu
 
 
@@ -30,6 +31,7 @@ class ApiFactory:
         self._provider_classes["zhipu"] = Zhipu
         self._provider_classes["deepseek"] = DeepSeek
         self._provider_classes["minimax"] = MiniMax
+        self._provider_classes["modelscope"] = ModelScope
     
     def _create_minimal_config(self, credential_file: str):
         """创建最小化配置文件，包含所有可用服务商"""
@@ -120,8 +122,13 @@ class ApiFactory:
                     
                     self._credentials[section_lower] = provider_config
             else:
+                if self._provider_classes.get(section_lower):
+                    self._ensure_provider_config(section_lower, credential_file)
                 raise ValueError(f"配置文件中未找到服务商 [{section_name}] 的配置段")
             
+        except UserWarning:
+            # 重新抛出配置初始化提示
+            raise
         except ValueError:
             # 重新抛出配置校验错误
             raise
@@ -167,7 +174,8 @@ class ApiFactory:
             "doubao": Doubao,
             "zhipu": Zhipu,
             "deepseek": DeepSeek,
-            "minimax": MiniMax
+            "minimax": MiniMax,
+            "modelscope": ModelScope
         }
         
         # 只注册指定的服务商
@@ -281,7 +289,7 @@ class ApiFactory:
         """
         return self._designated_provider
     
-    def list_providers(self) -> list:
+    def list_providers(self) -> list[str]:
         """
         列出所有已注册的服务商
         
