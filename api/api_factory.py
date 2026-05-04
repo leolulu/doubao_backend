@@ -7,6 +7,7 @@ from api.deepseek import DeepSeek
 from api.doubao import Doubao
 from api.minimax import MiniMax
 from api.modelscope import ModelScope
+from api.retrying_api import RetryingApi
 from api.zhipu import Zhipu
 
 
@@ -208,7 +209,12 @@ class ApiFactory:
         
         # 创建实例
         client = client_class(**client_kwargs)  # type: ignore
-        self._clients[name] = client
+        self._clients[name] = self._wrap_provider_client(name, client)
+
+    def _wrap_provider_client(self, name: str, client: BaseApi) -> BaseApi:
+        if isinstance(client, RetryingApi):
+            return client
+        return RetryingApi(name, client)
     
     def register_provider(self, name: str, client: BaseApi):
         """
@@ -220,7 +226,7 @@ class ApiFactory:
         """
         if not isinstance(client, BaseApi):
             raise TypeError(f"客户端必须实现 BaseApi 接口，当前类型: {type(client)}")
-        self._clients[name] = client
+        self._clients[name] = self._wrap_provider_client(name, client)
     
     def register_provider_class(self, name: str, client_class: Type[BaseApi], **kwargs):
         """
