@@ -1,7 +1,7 @@
 import re
 import time
 from dataclasses import dataclass
-from typing import Callable, override
+from typing import Callable, cast, override
 
 import requests
 
@@ -22,6 +22,84 @@ class RetryEvent:
 
 FailureHandler = Callable[[RetryEvent], None]
 Sleeper = Callable[[float], None]
+PostRequest = Callable[..., requests.Response]
+
+
+class FeishuNotifier:
+    """通过飞书自定义机器人发送最终失败通知。"""
+
+    ALLOWED_WEBHOOK_PREFIXES: tuple[str, ...] = (
+        "https://open.feishu.cn/open-apis/bot/v2/hook/",
+        "https://open.larksuite.com/open-apis/bot/v2/hook/",
+    )
+    SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+        re.compile(r"https?://\S+", re.IGNORECASE),
+        re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._\-]+"),
+        re.compile(r"(?i)\b(api[_-]?key|token|authorization)\s*[:=]\s*[^\s,;]+"),
+        re.compile(r"\bms-[0-9a-fA-F-]{32,}\b"),
+        re.compile(r"\b[A-Za-z0-9._-]{40,}\b"),
+    )
+
+    def __init__(self, webhook_url: str, post_request: PostRequest = requests.post) -> None:
+        if not webhook_url.startswith(self.ALLOWED_WEBHOOK_PREFIXES):
+            raise ValueError("飞书 webhook 地址必须使用飞书或 Lark 官方机器人地址")
+        self.webhook_url: str = webhook_url
+        self.post_request: PostRequest = post_request
+
+    def notify_failure(self, event: RetryEvent) -> None:
+        if event.will_retry:
+            return
+
+        try:
+            response = self.post_request(
+                self.webhook_url,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "msg_type": "text",
+                    "content": {
+                        "text": self._format_message(event)
+                    },
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as exception:
+            response = exception.response
+            if response is not None:
+                raise RuntimeError(f"飞书通知请求失败: HTTP {response.status_code}") from exception
+            raise RuntimeError(f"飞书通知请求失败: {type(exception).__name__}") from exception
+
+        try:
+            raw_result = cast(object, response.json())
+        except ValueError as exception:
+            raise RuntimeError("飞书通知响应解析失败") from exception
+        if not isinstance(raw_result, dict):
+            raise RuntimeError("飞书通知响应格式错误")
+
+        result = cast(dict[str, object], raw_result)
+        code = result.get("code")
+        if code != 0:
+            msg = result.get("msg", "")
+            raise RuntimeError(f"飞书通知发送失败: {code}, {msg}")
+
+    def _format_message(self, event: RetryEvent) -> str:
+        retry_count = max(event.attempt_number - 1, 0)
+        return "\n".join([
+            "大模型请求彻底失败",
+            f"渠道: {event.provider_name}",
+            f"请求次数: {event.attempt_number}",
+            f"已重试次数: {retry_count}/{event.max_retries}",
+            f"失败类型: {type(event.exception).__name__}",
+            f"失败原因摘要: {self._format_reason(event.exception)}",
+        ])
+
+    def _format_reason(self, exception: Exception) -> str:
+        reason = str(exception).strip()
+        for pattern in self.SECRET_PATTERNS:
+            reason = pattern.sub("[redacted]", reason)
+        if len(reason) <= 300:
+            return reason
+        return f"{reason[:300]}..."
 
 
 class RetryingApi(BaseApi):
@@ -93,4 +171,7 @@ class RetryingApi(BaseApi):
 
     def _handle_failure(self, event: RetryEvent) -> None:
         for handler in self.failure_handlers:
-            handler(event)
+            try:
+                handler(event)
+            except Exception as exception:
+                print(f"失败处理器执行失败: {type(exception).__name__}")

@@ -7,12 +7,14 @@ from api.deepseek import DeepSeek
 from api.doubao import Doubao
 from api.minimax import MiniMax
 from api.modelscope import ModelScope
-from api.retrying_api import RetryingApi
+from api.retrying_api import FailureHandler, FeishuNotifier, RetryingApi
 from api.zhipu import Zhipu
 
 
 class ApiFactory:
     """API 工厂类，用于管理和创建不同 AI 服务商的客户端实例"""
+
+    FEISHU_WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/b06a606f-9cc9-4033-bed8-8ff2e65ecec9"
     
     def __init__(self):
         self._clients: Dict[str, BaseApi] = {}
@@ -20,6 +22,7 @@ class ApiFactory:
         self._credentials: Dict[str, Any] = {
             "designated_provider": "doubao"
         }
+        self._failure_handlers: list[FailureHandler] = [FeishuNotifier(self.FEISHU_WEBHOOK_URL).notify_failure]
         # 存储服务商类，用于配置生成和校验
         self._provider_classes: Dict[str, Type[BaseApi]] = {}
         self._register_provider_classes()
@@ -45,7 +48,7 @@ class ApiFactory:
         lines.append("# 指定使用的服务商名称")
         lines.append("PROVIDER = doubao")
         lines.append("")
-        
+
         # 遍历所有注册的服务商类，根据参数定义生成配置
         for provider_name, provider_class in self._provider_classes.items():
             section_name = provider_name.upper()
@@ -83,7 +86,6 @@ class ApiFactory:
                 provider = config.get("designated_provider", "PROVIDER", fallback="doubao").strip('"').strip()
                 if provider:
                     self._credentials["designated_provider"] = provider
-            
             self._designated_provider = self._credentials["designated_provider"]
             
             # 只校验指定的服务商配置
@@ -168,7 +170,7 @@ class ApiFactory:
                     f.writelines(lines)
                 
                 raise UserWarning(f"已添加 {provider_name} 配置段到 {credential_file}，请填入凭据信息!")
-    
+
     def _register_designated_provider(self):
         """注册指定的服务商（只注册配置文件中指定的服务商）"""
         provider_mapping = {
@@ -214,7 +216,7 @@ class ApiFactory:
     def _wrap_provider_client(self, name: str, client: BaseApi) -> BaseApi:
         if isinstance(client, RetryingApi):
             return client
-        return RetryingApi(name, client)
+        return RetryingApi(name, client, failure_handlers=self._failure_handlers)
     
     def register_provider(self, name: str, client: BaseApi):
         """
