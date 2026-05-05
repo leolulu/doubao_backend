@@ -9,18 +9,30 @@ from api.base_api import BaseApi
 
 
 @dataclass(frozen=True)
-class RetryEvent:
+class FailureEvent:
+    provider_name: str
+    will_retry: bool
+
+
+@dataclass(frozen=True)
+class RetryEvent(FailureEvent):
     """统一失败事件，后续可用于接入通知、日志或监控。"""
 
-    provider_name: str
     attempt_number: int
     max_retries: int
     delay_seconds: float
     exception: Exception
-    will_retry: bool
 
 
-FailureHandler = Callable[[RetryEvent], None]
+@dataclass(frozen=True)
+class FallbackEvent(FailureEvent):
+    """整条回退链彻底失败时的统一事件。"""
+
+    targets: list[str]
+    exceptions: list[Exception]
+
+
+FailureHandler = Callable[[FailureEvent], None]
 Sleeper = Callable[[float], None]
 PostRequest = Callable[..., requests.Response]
 
@@ -46,7 +58,7 @@ class FeishuNotifier:
         self.webhook_url: str = webhook_url
         self.post_request: PostRequest = post_request
 
-    def notify_failure(self, event: RetryEvent) -> None:
+    def notify_failure(self, event: FailureEvent) -> None:
         if event.will_retry:
             return
 
@@ -82,7 +94,14 @@ class FeishuNotifier:
             msg = result.get("msg", "")
             raise RuntimeError(f"飞书通知发送失败: {code}, {msg}")
 
-    def _format_message(self, event: RetryEvent) -> str:
+    def _format_message(self, event: FailureEvent) -> str:
+        if isinstance(event, FallbackEvent):
+            return self._format_fallback_message(event)
+        if isinstance(event, RetryEvent):
+            return self._format_retry_message(event)
+        raise TypeError(f"未知失败事件类型: {type(event).__name__}")
+
+    def _format_retry_message(self, event: RetryEvent) -> str:
         retry_count = max(event.attempt_number - 1, 0)
         return "\n".join([
             "大模型请求彻底失败",
@@ -92,6 +111,19 @@ class FeishuNotifier:
             f"失败类型: {type(event.exception).__name__}",
             f"失败原因摘要: {self._format_reason(event.exception)}",
         ])
+
+    def _format_fallback_message(self, event: FallbackEvent) -> str:
+        targets = event.targets
+        exceptions = event.exceptions
+        lines = [
+            "大模型请求彻底失败",
+            f"渠道: {event.provider_name}",
+            f"回退链: {' -> '.join(targets)}",
+            "失败明细:",
+        ]
+        for target, exception in zip(targets, exceptions):
+            lines.append(f"- {target}: {type(exception).__name__}: {self._format_reason(exception)}")
+        return "\n".join(lines)
 
     def _format_reason(self, exception: Exception) -> str:
         reason = str(exception).strip()
@@ -136,11 +168,11 @@ class RetryingApi(BaseApi):
                 self._handle_failure(
                     RetryEvent(
                         provider_name=self.provider_name,
+                        will_retry=will_retry,
                         attempt_number=retry_count + 1,
                         max_retries=self.max_retries,
                         delay_seconds=self.retry_delay_seconds if will_retry else 0,
                         exception=exception,
-                        will_retry=will_retry,
                     )
                 )
                 if not will_retry:

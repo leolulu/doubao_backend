@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Type
 from api.base_api import BaseApi
 from api.deepseek import DeepSeek
 from api.doubao import Doubao
+from api.fallback_api import FallbackApi, FallbackEntry
 from api.minimax import MiniMax
 from api.modelscope import ModelScope
 from api.retrying_api import FailureHandler, FeishuNotifier, RetryingApi
@@ -210,13 +211,57 @@ class ApiFactory:
             raise ValueError(error_msg)
         
         # 创建实例
-        client = client_class(**client_kwargs)  # type: ignore
-        self._clients[name] = self._wrap_provider_client(name, client)
+        self._clients[name] = self._build_provider_client(name, client_class, client_kwargs)
 
-    def _wrap_provider_client(self, name: str, client: BaseApi) -> BaseApi:
-        if isinstance(client, RetryingApi):
+    def _build_provider_client(self, name: str, client_class: Type[BaseApi], client_kwargs: Dict[str, Any]) -> BaseApi:
+        target_param_name = self._get_target_param_name(client_class)
+        if target_param_name is None or target_param_name not in client_kwargs:
+            client = client_class(**client_kwargs)  # type: ignore
+            return self._wrap_provider_client(name, client)
+
+        targets = self._parse_ordered_targets(client_kwargs[target_param_name], name, target_param_name)
+
+        if len(targets) == 1:
+            target_kwargs = client_kwargs.copy()
+            target_kwargs[target_param_name] = targets[0]
+            client = client_class(**target_kwargs)  # type: ignore
+            return self._wrap_provider_client(name, client)
+
+        entries = []
+        for target in targets:
+            target_kwargs = client_kwargs.copy()
+            target_kwargs[target_param_name] = target
+            client = client_class(**target_kwargs)  # type: ignore
+            entries.append(FallbackEntry(target=target, client=self._wrap_provider_client(f"{name}:{target}", client, [])))
+
+        return FallbackApi(name, entries, failure_handlers=self._failure_handlers)
+
+    def _get_target_param_name(self, client_class: Type[BaseApi]) -> Optional[str]:
+        if client_class is Doubao:
+            return "access_point"
+        if client_class.get_param("model") is not None:
+            return "model"
+        return None
+
+    def _parse_ordered_targets(self, value: Any, provider_name: str, param_name: str) -> list[str]:
+        raw_value = str(value)
+        parts = raw_value.split(",")
+        targets = [part.strip().strip('"') for part in parts]
+        if any(not target for target in targets):
+            config_key = param_name.upper()
+            raise ValueError(f"服务商 [{provider_name.upper()}] 的 {config_key} 配置包含空值")
+        return targets
+
+    def _wrap_provider_client(
+        self,
+        name: str,
+        client: BaseApi,
+        failure_handlers: list[FailureHandler] | None = None,
+    ) -> BaseApi:
+        if isinstance(client, (RetryingApi, FallbackApi)):
             return client
-        return RetryingApi(name, client, failure_handlers=self._failure_handlers)
+        handlers = self._failure_handlers if failure_handlers is None else failure_handlers
+        return RetryingApi(name, client, failure_handlers=handlers)
     
     def register_provider(self, name: str, client: BaseApi):
         """

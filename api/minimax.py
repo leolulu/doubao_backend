@@ -38,7 +38,7 @@ class MiniMax(BaseApi):
                 name="model",
                 param_type=ParamType.STRING,
                 required=True,
-                description=f"模型名称（如 {'/'.join(cls.SUPPORTED_MODELS[:3])}...）"
+                description=f"模型名称（如 {'/'.join(cls.SUPPORTED_MODELS[:3])}...，可用逗号按顺序配置多个回退模型）"
             )
         ]
 

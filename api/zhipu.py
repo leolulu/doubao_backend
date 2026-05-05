@@ -21,7 +21,7 @@ class Zhipu(BaseApi):
                 name="model",
                 param_type=ParamType.STRING,
                 required=True,
-                description="模型名称（如 glm-4.7）"
+                description="模型名称（如 glm-4.7，可用逗号按顺序配置多个回退模型）"
             ),
             ProviderParam(
                 name="use_coding_endpoint",

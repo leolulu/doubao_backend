@@ -25,7 +25,7 @@ class ModelScope(BaseApi):
                 name="model",
                 param_type=ParamType.STRING,
                 required=True,
-                description="ModelScope Model-Id（如 deepseek-ai/DeepSeek-V4-Pro）"
+                description="ModelScope Model-Id（如 deepseek-ai/DeepSeek-V4-Pro，可用逗号按顺序配置多个回退模型）"
             )
         ]
 

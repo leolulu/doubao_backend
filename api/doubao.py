@@ -21,7 +21,7 @@ class Doubao(BaseApi):
                 name="access_point",
                 param_type=ParamType.STRING,
                 required=True,
-                description="访问点（模型标识）"
+                description="访问点（模型标识，可用逗号按顺序配置多个回退访问点）"
             )
         ]
     

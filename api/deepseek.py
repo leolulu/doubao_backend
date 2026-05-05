@@ -25,7 +25,7 @@ class DeepSeek(BaseApi):
                 name="model",
                 param_type=ParamType.STRING,
                 required=True,
-                description="模型名称（如 deepseek-chat 或 deepseek-reasoner）"
+                description="模型名称（如 deepseek-chat 或 deepseek-reasoner，可用逗号按顺序配置多个回退模型）"
             )
         ]
     
