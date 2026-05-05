@@ -32,29 +32,29 @@ pip install -r requirements.txt
 PROVIDER = doubao
 
 [DOUBAO]
-# API 密钥
+# API 密钥，可填单个密钥，也可用逗号配置备用密钥
 API_KEY = 
-# 访问点（模型标识）
+# 访问点（模型标识），可填单个值，也可用逗号配置备用访问点
 ACCESS_POINT = 
 
 [ZHIPU]
-# API 密钥
+# API 密钥，可填单个密钥，也可用逗号配置备用密钥
 API_KEY = 
-# 模型名称（如 glm-4.7）
+# 模型名称（如 glm-4.7），可填单个模型，也可用逗号配置备用模型
 MODEL = 
 # 是否使用 Coding 专用端点
 USE_CODING_ENDPOINT = False
 
 [DEEPSEEK]
-# API 密钥
+# API 密钥，可填单个密钥，也可用逗号配置备用密钥
 API_KEY =
-# 模型名称（如 deepseek-chat 或 deepseek-reasoner）
+# 模型名称（如 deepseek-chat 或 deepseek-reasoner），可填单个模型，也可用逗号配置备用模型
 MODEL =
 
 [MINIMAX]
-# API 密钥
+# API 密钥，可填单个密钥，也可用逗号配置备用密钥
 API_KEY =
-# 模型名称（如 MiniMax-M2.5）
+# 模型名称（如 MiniMax-M2.5），可填单个模型，也可用逗号配置备用模型
 MODEL =
 ```
 
@@ -348,7 +348,7 @@ curl -X POST http://localhost:11301/ \
 
 ### credentials.config
 
-配置文件使用 INI 格式，包含以下部分：
+配置文件使用 INI 格式，包含以下部分。旧的单值写法仍然有效，也可以用逗号配置备用链：
 
 #### [designated_provider] - 系统配置
 
@@ -363,6 +363,14 @@ API_KEY = "你的豆包API密钥"
 ACCESS_POINT = "你的豆包接入点"
 ```
 
+`API_KEY` 可以写单个密钥，也可以写逗号分隔的多个备用密钥。豆包使用 `ACCESS_POINT` 指定访问点，`ACCESS_POINT` 可以写单个值，也可以写逗号分隔的多个备用访问点。
+
+```ini
+[DOUBAO]
+API_KEY = key-a,key-b
+ACCESS_POINT = ep-a,ep-b
+```
+
 #### [ZHIPU] - 智谱配置
 
 ```ini
@@ -370,6 +378,19 @@ API_KEY = "你的智谱API密钥"
 MODEL = "glm-4.7"
 USE_CODING_ENDPOINT = False  # 是否使用 Coding 专用端点
 ```
+
+普通服务商使用 `MODEL` 指定模型。`MODEL` 可以写单个模型，也可以写逗号分隔的多个备用模型。
+
+```ini
+[ZHIPU]
+API_KEY = key-a,key-b
+MODEL = model-a,model-b
+USE_CODING_ENDPOINT = False
+```
+
+备用链的尝试顺序是先按 `API_KEY`，再按 `MODEL` 或 `ACCESS_POINT`。例如 `API_KEY = key-a,key-b` 且 `MODEL = model-a,model-b` 时，依次尝试 `key-a` + `model-a`、`key-a` + `model-b`、`key-b` + `model-a`、`key-b` + `model-b`。每个组合都会使用完整重试次数，只有所有组合都失败后才发送飞书通知。
+
+逗号两侧可以有空格，程序会自动去掉空白。不要留下空项，例如 `key-a,,key-b`、`model-a,`、`,model-a` 都是无效写法。
 
 #### [DEEPSEEK] - DeepSeek 配置
 

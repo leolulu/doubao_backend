@@ -12,6 +12,7 @@ class FallbackEntry:
 
     target: str
     client: BaseApi
+    secrets: tuple[str, ...] = ()
 
 
 class FallbackApi(BaseApi):
@@ -43,6 +44,7 @@ class FallbackApi(BaseApi):
             will_retry=False,
             targets=[entry.target for entry in self.entries],
             exceptions=exceptions,
+            secret_values=tuple(secret for entry in self.entries for secret in entry.secrets),
         )
         self._handle_failure(event)
         raise exceptions[-1]

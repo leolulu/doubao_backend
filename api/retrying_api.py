@@ -30,6 +30,7 @@ class FallbackEvent(FailureEvent):
 
     targets: list[str]
     exceptions: list[Exception]
+    secret_values: tuple[str, ...] = ()
 
 
 FailureHandler = Callable[[FailureEvent], None]
@@ -122,11 +123,13 @@ class FeishuNotifier:
             "失败明细:",
         ]
         for target, exception in zip(targets, exceptions):
-            lines.append(f"- {target}: {type(exception).__name__}: {self._format_reason(exception)}")
+            lines.append(f"- {target}: {type(exception).__name__}: {self._format_reason(exception, event.secret_values)}")
         return "\n".join(lines)
 
-    def _format_reason(self, exception: Exception) -> str:
+    def _format_reason(self, exception: Exception, secret_values: tuple[str, ...] = ()) -> str:
         reason = str(exception).strip()
+        for secret in sorted({secret for secret in secret_values if secret}, key=len, reverse=True):
+            reason = reason.replace(secret, "[redacted]")
         for pattern in self.SECRET_PATTERNS:
             reason = pattern.sub("[redacted]", reason)
         if len(reason) <= 300:

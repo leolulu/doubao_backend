@@ -214,27 +214,57 @@ class ApiFactory:
         self._clients[name] = self._build_provider_client(name, client_class, client_kwargs)
 
     def _build_provider_client(self, name: str, client_class: Type[BaseApi], client_kwargs: Dict[str, Any]) -> BaseApi:
+        api_keys: list[str | None] = []
+        has_api_key = "api_key" in client_kwargs
+        if has_api_key:
+            api_keys.extend(self._parse_ordered_targets(client_kwargs["api_key"], name, "api_key"))
+        else:
+            api_keys.append(None)
+
         target_param_name = self._get_target_param_name(client_class)
-        if target_param_name is None or target_param_name not in client_kwargs:
-            client = client_class(**client_kwargs)  # type: ignore
+        active_target_param_name: str | None = None
+        targets: list[str | None] = []
+        if target_param_name is not None and target_param_name in client_kwargs:
+            active_target_param_name = target_param_name
+            targets.extend(self._parse_ordered_targets(client_kwargs[active_target_param_name], name, active_target_param_name))
+        else:
+            targets.append(None)
+
+        if len(api_keys) == 1 and len(targets) == 1:
+            provider_kwargs = client_kwargs.copy()
+            if has_api_key:
+                provider_kwargs["api_key"] = api_keys[0]
+            if active_target_param_name is not None:
+                provider_kwargs[active_target_param_name] = targets[0]
+            client = client_class(**provider_kwargs)  # type: ignore
             return self._wrap_provider_client(name, client)
 
-        targets = self._parse_ordered_targets(client_kwargs[target_param_name], name, target_param_name)
-
-        if len(targets) == 1:
-            target_kwargs = client_kwargs.copy()
-            target_kwargs[target_param_name] = targets[0]
-            client = client_class(**target_kwargs)  # type: ignore
-            return self._wrap_provider_client(name, client)
-
-        entries = []
-        for target in targets:
-            target_kwargs = client_kwargs.copy()
-            target_kwargs[target_param_name] = target
-            client = client_class(**target_kwargs)  # type: ignore
-            entries.append(FallbackEntry(target=target, client=self._wrap_provider_client(f"{name}:{target}", client, [])))
+        entries: list[FallbackEntry] = []
+        api_key_varies = len(api_keys) > 1
+        for api_key_index, api_key in enumerate(api_keys, start=1):
+            for target in targets:
+                provider_kwargs = client_kwargs.copy()
+                if has_api_key:
+                    provider_kwargs["api_key"] = api_key
+                if active_target_param_name is not None:
+                    provider_kwargs[active_target_param_name] = target
+                label = self._build_fallback_label(api_key_index, api_key_varies, target)
+                secrets = (api_key,) if has_api_key and api_key is not None else ()
+                client = client_class(**provider_kwargs)  # type: ignore
+                entries.append(FallbackEntry(
+                    target=label,
+                    client=self._wrap_provider_client(label, client, []),
+                    secrets=secrets,
+                ))
 
         return FallbackApi(name, entries, failure_handlers=self._failure_handlers)
+
+    def _build_fallback_label(self, api_key_index: int, api_key_varies: bool, target: str | None) -> str:
+        if target is None:
+            return f"api_key#{api_key_index}"
+        if api_key_varies:
+            return f"api_key#{api_key_index}:{target}"
+        return target
 
     def _get_target_param_name(self, client_class: Type[BaseApi]) -> Optional[str]:
         if client_class is Doubao:
