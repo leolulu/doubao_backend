@@ -1,5 +1,5 @@
-from dataclasses import dataclass
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import override
 
 from api.base_api import BaseApi
@@ -8,7 +8,7 @@ from api.retrying_api import FailureHandler, FallbackEvent
 
 @dataclass(frozen=True)
 class FallbackEntry:
-    """回退链中的一个模型或访问点。"""
+    """One target in a fallback chain."""
 
     target: str
     client: BaseApi
@@ -16,7 +16,7 @@ class FallbackEntry:
 
 
 class FallbackApi(BaseApi):
-    """按顺序尝试同一服务商下的多个模型或访问点。"""
+    """Try multiple clients in order and report only after the whole chain fails."""
 
     def __init__(
         self,
@@ -25,7 +25,7 @@ class FallbackApi(BaseApi):
         failure_handlers: list[FailureHandler] | None = None,
     ) -> None:
         if not entries:
-            raise ValueError("回退链不能为空")
+            raise ValueError("fallback chain cannot be empty")
         self.provider_name: str = provider_name
         self.entries: list[FallbackEntry] = list(entries)
         self.failure_handlers: list[FailureHandler] = failure_handlers or []
@@ -47,6 +47,7 @@ class FallbackApi(BaseApi):
             secret_values=tuple(secret for entry in self.entries for secret in entry.secrets),
         )
         self._handle_failure(event)
+        self._attach_fallback_event(exceptions[-1], event)
         raise exceptions[-1]
 
     def _handle_failure(self, event: FallbackEvent) -> None:
@@ -54,4 +55,10 @@ class FallbackApi(BaseApi):
             try:
                 handler(event)
             except Exception as exception:
-                print(f"失败处理器执行失败: {type(exception).__name__}")
+                print(f"failure handler failed: {type(exception).__name__}")
+
+    def _attach_fallback_event(self, exception: Exception, event: FallbackEvent) -> None:
+        try:
+            setattr(exception, "fallback_event", event)
+        except Exception:
+            pass

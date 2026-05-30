@@ -33,6 +33,26 @@ class FallbackEvent(FailureEvent):
     secret_values: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ProviderSwitchEvent(FailureEvent):
+    """A provider failed completely and traffic is moving to the next provider."""
+
+    from_provider: str
+    to_provider: str
+    targets: list[str]
+    exceptions: list[Exception]
+    secret_values: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ProviderFallbackEvent(FailureEvent):
+    """All configured providers failed."""
+
+    providers: list[str]
+    exceptions: list[Exception]
+    secret_values: tuple[str, ...] = ()
+
+
 FailureHandler = Callable[[FailureEvent], None]
 Sleeper = Callable[[float], None]
 PostRequest = Callable[..., requests.Response]
@@ -96,6 +116,10 @@ class FeishuNotifier:
             raise RuntimeError(f"飞书通知发送失败: {code}, {msg}")
 
     def _format_message(self, event: FailureEvent) -> str:
+        if isinstance(event, ProviderSwitchEvent):
+            return self._format_provider_switch_message(event)
+        if isinstance(event, ProviderFallbackEvent):
+            return self._format_provider_fallback_message(event)
         if isinstance(event, FallbackEvent):
             return self._format_fallback_message(event)
         if isinstance(event, RetryEvent):
@@ -124,6 +148,43 @@ class FeishuNotifier:
         ]
         for target, exception in zip(targets, exceptions):
             lines.append(f"- {target}: {type(exception).__name__}: {self._format_reason(exception, event.secret_values)}")
+        return "\n".join(lines)
+
+    def _format_provider_switch_message(self, event: ProviderSwitchEvent) -> str:
+        lines = [
+            "大模型供应商已切换",
+            f"失败供应商: {event.from_provider}",
+            f"切换目标: {event.to_provider}",
+            f"失败链路: {' -> '.join(event.targets)}",
+            "失败明细:",
+        ]
+        for target, exception in zip(event.targets, event.exceptions):
+            lines.append(
+                f"- {target}: {type(exception).__name__}: "
+                f"{self._format_reason(exception, event.secret_values)}"
+            )
+        return "\n".join(lines)
+
+    def _format_provider_fallback_message(self, event: ProviderFallbackEvent) -> str:
+        lines = [
+            "大模型供应商回退链彻底失败",
+            f"供应商回退链: {' -> '.join(event.providers)}",
+            "失败明细:",
+        ]
+        for provider, exception in zip(event.providers, event.exceptions):
+            fallback_event = getattr(exception, "fallback_event", None)
+            if isinstance(fallback_event, FallbackEvent):
+                lines.append(f"- {provider}:")
+                for target, target_exception in zip(fallback_event.targets, fallback_event.exceptions):
+                    lines.append(
+                        f"  - {target}: {type(target_exception).__name__}: "
+                        f"{self._format_reason(target_exception, event.secret_values)}"
+                    )
+            else:
+                lines.append(
+                    f"- {provider}: {type(exception).__name__}: "
+                    f"{self._format_reason(exception, event.secret_values)}"
+                )
         return "\n".join(lines)
 
     def _format_reason(self, exception: Exception, secret_values: tuple[str, ...] = ()) -> str:
