@@ -74,6 +74,8 @@ python main.py
 python -m unittest discover -s tests -v
 ```
 
+当前测试重点覆盖配置校验、供应商回退、请求重试、飞书通知、消息与会话管理、HTTP 网关入口，以及各服务商请求适配层。
+
 ## API 使用
 
 ### 请求参数
