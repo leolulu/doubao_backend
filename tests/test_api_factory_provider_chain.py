@@ -31,6 +31,18 @@ class FakeProvider(BaseApi):
         return f"{self.api_key}:{self.model}"
 
 
+class FakeAccessPointProvider(BaseApi):
+    @classmethod
+    def get_params(cls) -> list[ProviderParam]:
+        return [
+            ProviderParam("api_key", ParamType.STRING, required=True),
+            ProviderParam("access_point", ParamType.STRING, required=True),
+        ]
+
+    def reason(self, messages: list[dict[str, str]]) -> str:
+        return "ok"
+
+
 class FailingProvider(FakeProvider):
     def reason(self, messages: list[dict[str, str]]) -> str:
         raise Exception(f"{self.api_key}:{self.model}")
@@ -111,6 +123,22 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertEqual(factory._credentials["p1"], {"api_key": "key-1", "model": "model-1"})
         self.assertEqual(factory._credentials["p2"], {"api_key": "key-2", "model": "model-2"})
 
+    def test_create_minimal_config_documents_fallback_syntax(self) -> None:
+        factory = self.make_factory({"p1": FakeProvider, "p2": FakeAccessPointProvider})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = os.path.join(temp_dir, "credentials.config")
+
+            factory._create_minimal_config(config_path)
+
+            with open(config_path, encoding="utf-8") as config_file:
+                content = config_file.read()
+
+        self.assertIn("# 供应商回退链示例: PROVIDER = doubao,zhipu,kimi", content)
+        self.assertIn("# 回退语法: API_KEY = key-a,key-b", content)
+        self.assertIn("# 回退语法: MODEL = model-a,model-b", content)
+        self.assertIn("# 回退语法: ACCESS_POINT = ep-a,ep-b", content)
+
     def test_load_config_fails_at_startup_when_later_provider_section_is_missing(self) -> None:
         factory = self.make_factory()
 
@@ -134,7 +162,10 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
                     factory._load_config()
 
                 with open("credentials.config", encoding="utf-8") as config_file:
-                    self.assertIn("[P2]", config_file.read())
+                    content = config_file.read()
+                    self.assertIn("[P2]", content)
+                    self.assertIn("# 回退语法: API_KEY = key-a,key-b", content)
+                    self.assertIn("# 回退语法: MODEL = model-a,model-b", content)
             finally:
                 os.chdir(previous_cwd)
 

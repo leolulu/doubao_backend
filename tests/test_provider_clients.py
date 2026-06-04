@@ -104,7 +104,7 @@ class KimiProviderTest(unittest.TestCase):
         self.assertEqual(calls[0][1]["x-api-key"], "key")
         self.assertEqual(calls[0][1]["anthropic-version"], "2023-06-01")
         self.assertEqual(calls[0][1]["User-Agent"], "claude-code/0.1.0")
-        self.assertEqual(calls[0][2]["model"], "kimi-for-coding")
+        self.assertEqual(calls[0][2]["model"], "kimi-k2.6")
         self.assertEqual(calls[0][2]["max_tokens"], 32768)
         self.assertEqual(calls[0][2]["system"], "system prompt")
         self.assertEqual(calls[0][2]["messages"], [

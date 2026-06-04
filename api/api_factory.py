@@ -47,18 +47,14 @@ class ApiFactory:
 
         lines.append("[designated_provider]")
         lines.append("# AI provider names in fallback priority order.")
+        lines.append("# 单供应商示例: PROVIDER = doubao")
+        lines.append("# 供应商回退链示例: PROVIDER = doubao,zhipu,kimi")
+        lines.append("# 按从左到右的顺序尝试供应商，不要留下空项。")
         lines.append("PROVIDER = doubao")
         lines.append("")
 
         for provider_name, provider_class in self._provider_classes.items():
-            section_name = provider_name.upper()
-            lines.append(f"[{section_name}]")
-
-            for param in provider_class.get_params():
-                lines.append(f"# {param.description}")
-                default_value = "" if param.default is None else str(param.default)
-                lines.append(f"{param.to_config_key()} = {default_value}")
-
+            lines.extend(self._build_provider_config_lines(provider_name, provider_class))
             lines.append("")
 
         with open(credential_file, "w", encoding="utf-8") as f:
@@ -171,17 +167,54 @@ class ApiFactory:
         if not section_exists:
             provider_class = self._provider_classes.get(provider_name.lower())
             if provider_class:
-                lines.append(f"\n[{section_name}]\n")
-
-                for param in provider_class.get_params():
-                    lines.append(f"# {param.description}\n")
-                    default_value = "" if param.default is None else str(param.default)
-                    lines.append(f"{param.to_config_key()} = {default_value}\n")
+                lines.append("\n")
+                lines.extend(self._build_provider_config_lines(
+                    provider_name,
+                    provider_class,
+                    trailing_newline=True,
+                ))
 
                 with open(credential_file, "w", encoding="utf-8") as f:
                     f.writelines(lines)
 
                 raise UserWarning(f"已添加 {provider_name} 配置段到 {credential_file}，请填入凭据信息!")
+
+    def _build_provider_config_lines(
+        self,
+        provider_name: str,
+        provider_class: Type[BaseApi],
+        trailing_newline: bool = False,
+    ) -> list[str]:
+        line_end = "\n" if trailing_newline else ""
+        lines = [f"[{provider_name.upper()}]{line_end}"]
+
+        for param in provider_class.get_params():
+            config_key = param.to_config_key()
+            for comment in self._build_param_config_comments(config_key, param.description):
+                lines.append(f"# {comment}{line_end}")
+            default_value = "" if param.default is None else str(param.default)
+            lines.append(f"{config_key} = {default_value}{line_end}")
+
+        return lines
+
+    def _build_param_config_comments(self, config_key: str, description: str) -> list[str]:
+        comments = [description]
+        if config_key == "API_KEY":
+            comments.extend([
+                "回退语法: API_KEY = key-a,key-b",
+                "按从左到右的顺序尝试 API Key。",
+            ])
+        elif config_key == "MODEL":
+            comments.extend([
+                "回退语法: MODEL = model-a,model-b",
+                "每个 API_KEY 下按从左到右的顺序尝试模型。",
+            ])
+        elif config_key == "ACCESS_POINT":
+            comments.extend([
+                "回退语法: ACCESS_POINT = ep-a,ep-b",
+                "每个 API_KEY 下按从左到右的顺序尝试访问点。",
+            ])
+        return comments
 
     def _register_designated_provider(self):
         for provider_name in self._designated_providers:

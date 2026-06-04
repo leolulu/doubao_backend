@@ -15,7 +15,7 @@ class Kimi(BaseApi):
 
     ANTHROPIC_BASE_URL = "https://api.kimi.com/coding"
     OPENAI_BASE_URL = "https://api.kimi.com/coding/v1"
-    DEFAULT_MODEL = "kimi-for-coding"
+    DEFAULT_MODEL = "kimi-k2.6"
     DEFAULT_PROTOCOL = "anthropic"
     DEFAULT_MAX_TOKENS = 32768
     DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
@@ -29,14 +29,14 @@ class Kimi(BaseApi):
                 name="api_key",
                 param_type=ParamType.STRING,
                 required=True,
-                description="Kimi Code API key"
+                description="Kimi Code API Key"
             ),
             ProviderParam(
                 name="model",
                 param_type=ParamType.STRING,
                 required=True,
                 default=cls.DEFAULT_MODEL,
-                description="Model name, e.g. kimi-for-coding or kimi-k2.6"
+                description="模型名称（如 kimi-k2.6 或 kimi-for-coding）"
             ),
         ]
 

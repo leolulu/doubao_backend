@@ -201,7 +201,7 @@ curl -X POST http://localhost:11301/ \
 
 **配置参数：**
 - `API_KEY`: Kimi Code API Key（必填）
-- `MODEL`: 模型名称，如 `kimi-k2.6` 或 `kimi-for-coding`（必填，默认 `kimi-for-coding`）
+- `MODEL`: 模型名称，如 `kimi-k2.6` 或 `kimi-for-coding`（必填，默认 `kimi-k2.6`）
 
 推荐优先配置 `kimi-k2.6`。如需使用官方稳定模型标识，可以配置 `kimi-for-coding`；也可以写成 `kimi-k2.6,kimi-for-coding` 做模型回退。
 
