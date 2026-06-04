@@ -9,6 +9,7 @@ if not hasattr(typing, "override"):
 from api.api_factory import ApiFactory
 from api.base_api import BaseApi
 from api.fallback_api import FallbackApi
+from api.kimi import Kimi
 from api.param_schema import ParamType, ProviderParam
 from api.provider_fallback_api import ProviderFallbackApi
 from api.retrying_api import ProviderSwitchEvent, RetryingApi
@@ -69,6 +70,14 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
             with self.subTest(invalid_value=invalid_value):
                 with self.assertRaises(ValueError):
                     factory._parse_designated_providers(invalid_value)
+
+    def test_register_provider_classes_includes_kimi(self) -> None:
+        factory = self.make_factory()
+        factory._provider_classes = {}
+
+        factory._register_provider_classes()
+
+        self.assertIs(factory._provider_classes["kimi"], Kimi)
 
     def test_load_config_validates_every_configured_provider_at_startup(self) -> None:
         factory = self.make_factory()

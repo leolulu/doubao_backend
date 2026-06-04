@@ -6,6 +6,7 @@ from api.base_api import BaseApi
 from api.deepseek import DeepSeek
 from api.doubao import Doubao
 from api.fallback_api import FallbackApi, FallbackEntry
+from api.kimi import Kimi
 from api.minimax import MiniMax
 from api.modelscope import ModelScope
 from api.provider_fallback_api import ProviderFallbackApi, ProviderFallbackEntry
@@ -39,6 +40,7 @@ class ApiFactory:
         self._provider_classes["deepseek"] = DeepSeek
         self._provider_classes["minimax"] = MiniMax
         self._provider_classes["modelscope"] = ModelScope
+        self._provider_classes["kimi"] = Kimi
 
     def _create_minimal_config(self, credential_file: str):
         lines = []

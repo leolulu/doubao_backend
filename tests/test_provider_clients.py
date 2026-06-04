@@ -7,6 +7,7 @@ if not hasattr(typing, "override"):
 
 from api.deepseek import DeepSeek
 from api.doubao import Doubao
+from api.kimi import Kimi
 from api.modelscope import ModelScope
 from api.zhipu import Zhipu
 
@@ -78,6 +79,89 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         with patch("api.deepseek.requests.post", return_value=FakeResponse(500, text="server error")):
             with self.assertRaisesRegex(Exception, "500"):
                 DeepSeek("key", "model").reason([])
+
+
+class KimiProviderTest(unittest.TestCase):
+    def test_kimi_uses_anthropic_protocol_by_default(self) -> None:
+        calls = []
+
+        def post(url, headers, json):
+            calls.append((url, headers, json))
+            return FakeResponse(200, payload={
+                "content": [
+                    {"type": "text", "text": "kimi-answer"}
+                ]
+            })
+
+        with patch("api.kimi.requests.post", side_effect=post):
+            result = Kimi("key").reason([
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "hi"},
+            ])
+
+        self.assertEqual(result, "kimi-answer")
+        self.assertEqual(calls[0][0], "https://api.kimi.com/coding/v1/messages")
+        self.assertEqual(calls[0][1]["x-api-key"], "key")
+        self.assertEqual(calls[0][1]["anthropic-version"], "2023-06-01")
+        self.assertEqual(calls[0][1]["User-Agent"], "claude-code/0.1.0")
+        self.assertEqual(calls[0][2]["model"], "kimi-for-coding")
+        self.assertEqual(calls[0][2]["max_tokens"], 32768)
+        self.assertEqual(calls[0][2]["system"], "system prompt")
+        self.assertEqual(calls[0][2]["messages"], [
+            {"role": "user", "content": "hi"},
+        ])
+
+    def test_kimi_openai_protocol_uses_openai_shape_and_user_agent(self) -> None:
+        calls = []
+
+        def post(url, headers, json):
+            calls.append((url, headers, json))
+            return FakeResponse(200)
+
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "hi"},
+        ]
+
+        with patch("api.kimi.requests.post", side_effect=post):
+            result = Kimi("key", "kimi-k2.6", protocol="openai").reason(messages)
+
+        self.assertEqual(result, "provider-answer")
+        self.assertEqual(calls[0][0], "https://api.kimi.com/coding/v1/chat/completions")
+        self.assertEqual(calls[0][1]["Authorization"], "Bearer key")
+        self.assertEqual(calls[0][1]["User-Agent"], "claude-code/0.1.0")
+        self.assertEqual(calls[0][2]["model"], "kimi-k2.6")
+        self.assertEqual(calls[0][2]["messages"], messages)
+
+    def test_kimi_openai_protocol_raises_when_reasoning_exhausts_max_tokens(self) -> None:
+        response = FakeResponse(200, payload={
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "thinking",
+                    },
+                    "finish_reason": "length",
+                }
+            ]
+        })
+
+        with patch("api.kimi.requests.post", return_value=response):
+            with self.assertRaisesRegex(Exception, "max_tokens"):
+                Kimi("key", protocol="openai", max_tokens=16).reason([
+                    {"role": "user", "content": "hi"}
+                ])
+
+    def test_kimi_config_only_exposes_api_key_and_model(self) -> None:
+        self.assertEqual(
+            [param.to_config_key() for param in Kimi.get_params()],
+            ["API_KEY", "MODEL"],
+        )
+
+    def test_kimi_rejects_unsupported_protocol_at_construction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported Kimi protocol"):
+            Kimi("key", protocol="bad")
 
 
 class FakeArkCompletionMessage:
