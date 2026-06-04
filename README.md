@@ -1,10 +1,10 @@
 # 多 AI 服务商网关服务
 
-一个支持多 AI 服务商的对话 API 网关服务，基于 Flask 构建。支持豆包、智谱、DeepSeek、MiniMax 等多个 AI 服务商，提供统一的 RESTful API 接口。
+一个支持多 AI 服务商的对话 API 网关服务，基于 Flask 构建。支持豆包、智谱、DeepSeek、MiniMax、Kimi Code 等多个 AI 服务商，提供统一的 RESTful API 接口。
 
 ## 功能特性
 
-- ✅ 支持多 AI 服务商（豆包、智谱、DeepSeek、MiniMax）
+- ✅ 支持多 AI 服务商（豆包、智谱、DeepSeek、MiniMax、Kimi Code）
 - ✅ 会话管理和历史记录
 - ✅ RESTful API 接口（GET/POST）
 - ✅ 可扩展架构，轻松添加新的 AI 服务商
@@ -56,6 +56,12 @@ MODEL =
 API_KEY =
 # 模型名称（如 MiniMax-M2.5），可填单个模型，也可用逗号配置备用模型
 MODEL =
+
+[KIMI]
+# Kimi Code API Key，可填单个密钥，也可用逗号配置备用密钥
+API_KEY =
+# 模型名称（如 kimi-for-coding 或 kimi-k2.6），可填单个模型，也可用逗号配置备用模型
+MODEL = kimi-k2.6
 ```
 
 ### 3. 启动服务
@@ -68,10 +74,10 @@ python main.py
 
 ### 4. 运行测试
 
-当前测试使用 Python 标准库 `unittest`，不需要额外安装测试依赖：
+当前测试使用 Python 标准库 `unittest`，通过 `uv` 按 `requirements.txt` 准备依赖并运行：
 
 ```bash
-python -m unittest discover -s tests -v
+uv run --with-requirements requirements.txt python -B -m unittest discover -s tests -v
 ```
 
 当前测试重点覆盖配置校验、供应商回退、请求重试、飞书通知、消息与会话管理、HTTP 网关入口，以及各服务商请求适配层。
@@ -188,6 +194,16 @@ curl -X POST http://localhost:11301/ \
 - `MiniMax-M2.5-highspeed`
 - `MiniMax-M2.1` / `MiniMax-M2.1-highspeed`
 - `MiniMax-M2`
+
+### Kimi Code
+
+使用 Kimi Code API。配置文件只需要填写 API Key 和模型名，请求协议、Base URL、必要请求头和输出 token 上限等细节由服务商适配层内部处理。
+
+**配置参数：**
+- `API_KEY`: Kimi Code API Key（必填）
+- `MODEL`: 模型名称，如 `kimi-k2.6` 或 `kimi-for-coding`（必填，默认 `kimi-for-coding`）
+
+推荐优先配置 `kimi-k2.6`。如需使用官方稳定模型标识，可以配置 `kimi-for-coding`；也可以写成 `kimi-k2.6,kimi-for-coding` 做模型回退。
 
 ## 架构说明
 
@@ -422,6 +438,13 @@ API_KEY = "你的MiniMax API密钥"
 MODEL = "MiniMax-M2.5"
 ```
 
+#### [KIMI] - Kimi Code 配置
+
+```ini
+API_KEY = "你的Kimi Code API Key"
+MODEL = "kimi-k2.6"  # 也可以配置 kimi-k2.6,kimi-for-coding 做模型回退
+```
+
 ## 项目结构
 
 ```
@@ -436,7 +459,8 @@ doubao_backend/
 │   ├── doubao.py             # 豆包 API 实现
 │   ├── zhipu.py              # 智谱 AI API 实现
 │   ├── deepseek.py           # DeepSeek API 实现
-│   └── minimax.py            # MiniMax API 实现
+│   ├── minimax.py            # MiniMax API 实现
+│   └── kimi.py               # Kimi Code API 实现
 ├── models/
 │   ├── message.py            # 消息模型
 │   └── session_manager.py    # 会话管理器
@@ -487,7 +511,7 @@ A: 设置 `preserve` 参数为 `false`，或者创建新的会话 ID。
 
 ### Q: 支持哪些 AI 服务商？
 
-A: 目前支持豆包（Doubao）、智谱 AI（Zhipu）、DeepSeek 和 MiniMax。你可以按照扩展指南添加新的服务商。
+A: 目前支持豆包（Doubao）、智谱 AI（Zhipu）、DeepSeek、MiniMax 和 Kimi Code。你可以按照扩展指南添加新的服务商。
 
 ### Q: 如何设置系统提示词？
 
