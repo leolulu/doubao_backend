@@ -64,8 +64,8 @@ API_KEY =
 MODEL = kimi-k2.6
 
 [CHAT_COMPLETION:PROVIDER_NAME]
-# Generic OpenAI-compatible Chat Completions endpoint.
-# Enable it with: PROVIDER = chat_completion:provider_name
+# 通用OpenAI兼容接口。
+# 启用方式: PROVIDER = chat_completion:provider_name
 BASE_URL =
 API_KEY =
 MODEL =
@@ -212,13 +212,13 @@ curl -X POST http://localhost:11301/ \
 
 推荐优先配置 `kimi-k2.6`。如需使用官方稳定模型标识，可以配置 `kimi-for-coding`；也可以写成 `kimi-k2.6,kimi-for-coding` 做模型回退。
 
-### Generic Chat Completions
+### 通用OpenAI兼容接口
 
-Use `chat_completion:<alias>` in `PROVIDER` for OpenAI-compatible Chat Completions services that do not need a custom provider adapter.
+适用于兼容 OpenAI Chat Completions 协议、但不需要单独适配层的服务商。在 `[designated_provider]` 的 `PROVIDER` 中写 `chat_completion:<别名>`，并提供对应的 `[CHAT_COMPLETION:<别名>]` 配置段即可。
 
 **配置参数：**
-- `BASE_URL`: OpenAI-compatible base URL，通常以 `/v1` 结尾（必填）
-- `API_KEY`: API key（必填）
+- `BASE_URL`: OpenAI 兼容接口的基础地址，通常以 `/v1` 结尾（必填）
+- `API_KEY`: API 密钥（必填）
 - `MODEL`: 模型名称（必填）
 
 ```ini
@@ -227,16 +227,16 @@ PROVIDER = chat_completion:provider_name,zhipu,chat_completion:another_provider
 
 [CHAT_COMPLETION:PROVIDER_NAME]
 BASE_URL = https://example.com/v1
-API_KEY = your-api-key
-MODEL = your-model
+API_KEY = 你的API密钥
+MODEL = 你的模型名称
 
 [CHAT_COMPLETION:ANOTHER_PROVIDER]
 BASE_URL = https://another-example.com/v1
-API_KEY = another-api-key
-MODEL = another-model
+API_KEY = 另一个API密钥
+MODEL = 另一个模型名称
 ```
 
-`BASE_URL` should point to the OpenAI-compatible base path; the provider appends `/chat/completions` automatically. `API_KEY` and `MODEL` keep the same comma-separated fallback syntax as the fixed providers. Failed HTTP responses and request exceptions are written to `logs/llm_error_requests.jsonl`, while successful requests are written to the rolling `logs/llm_success_requests.jsonl` file that keeps the latest 300 records. These request logs do not include the API key.
+`BASE_URL` 只需要写到 OpenAI 兼容接口的基础路径，程序会自动追加 `/chat/completions`。`API_KEY` 和 `MODEL` 继续支持逗号分隔的回退语法。HTTP 失败响应和请求异常会写入 `logs/llm_error_requests.jsonl`；成功请求会写入滚动日志 `logs/llm_success_requests.jsonl`，最多保留最近 300 条记录。请求日志不会记录 API 密钥。
 
 ## 架构说明
 
