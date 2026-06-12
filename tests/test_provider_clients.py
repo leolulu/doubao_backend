@@ -36,18 +36,32 @@ class FakeResponse:
 class OpenAICompatibleProviderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
-        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.log_path)
+        self.error_log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
+        self.success_log_path = Path(self.temp_dir.name) / "llm_success_requests.jsonl"
+        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.error_log_path)
+        self.success_log_path_patcher = patch.object(
+            error_request_logger,
+            "SUCCESS_LOG_PATH",
+            self.success_log_path,
+        )
         self.log_path_patcher.start()
+        self.success_log_path_patcher.start()
 
     def tearDown(self) -> None:
+        self.success_log_path_patcher.stop()
         self.log_path_patcher.stop()
         self.temp_dir.cleanup()
 
     def read_error_log(self):
         return [
             json.loads(line)
-            for line in self.log_path.read_text(encoding="utf-8").splitlines()
+            for line in self.error_log_path.read_text(encoding="utf-8").splitlines()
+        ]
+
+    def read_success_log(self):
+        return [
+            json.loads(line)
+            for line in self.success_log_path.read_text(encoding="utf-8").splitlines()
         ]
 
     def test_deepseek_posts_expected_request_and_returns_content(self) -> None:
@@ -64,6 +78,18 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(calls[0][0], "https://api.deepseek.com/chat/completions")
         self.assertEqual(calls[0][1]["Authorization"], "Bearer key")
         self.assertEqual(calls[0][2]["model"], "deepseek-chat")
+
+        records = self.read_success_log()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["provider"], "deepseek")
+        self.assertEqual(records[0]["request_body"], {
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        self.assertEqual(records[0]["response_status_code"], 200)
+        self.assertEqual(records[0]["response_body"], "error")
+        self.assertIsNone(records[0]["exception_type"])
+        self.assertNotIn("key", json.dumps(records[0], ensure_ascii=False))
 
     def test_modelscope_posts_expected_request_and_returns_content(self) -> None:
         calls = []
@@ -103,6 +129,16 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
             "messages": [{"role": "user", "content": "hi"}],
         })
 
+        records = self.read_success_log()
+        self.assertEqual(records[0]["provider"], "chat_completion:custom")
+        self.assertEqual(records[0]["url"], "https://example.test/v1/chat/completions")
+        self.assertEqual(records[0]["request_body"], {
+            "model": "namespace/model",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+        self.assertEqual(records[0]["response_status_code"], 200)
+        self.assertNotIn("secret-key", json.dumps(records[0], ensure_ascii=False))
+
     def test_zhipu_uses_configured_endpoint_and_temperature(self) -> None:
         calls = []
 
@@ -134,6 +170,7 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(records[0]["response_status_code"], 500)
         self.assertEqual(records[0]["response_body"], "server error")
         self.assertNotIn("key", json.dumps(records[0], ensure_ascii=False))
+        self.assertFalse(self.success_log_path.exists())
 
     def test_deepseek_logs_request_exception(self) -> None:
         with patch("api.deepseek.requests.post", side_effect=requests.exceptions.ConnectionError("boom")):
@@ -166,6 +203,24 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
 
 
 class KimiProviderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.error_log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
+        self.success_log_path = Path(self.temp_dir.name) / "llm_success_requests.jsonl"
+        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.error_log_path)
+        self.success_log_path_patcher = patch.object(
+            error_request_logger,
+            "SUCCESS_LOG_PATH",
+            self.success_log_path,
+        )
+        self.log_path_patcher.start()
+        self.success_log_path_patcher.start()
+
+    def tearDown(self) -> None:
+        self.success_log_path_patcher.stop()
+        self.log_path_patcher.stop()
+        self.temp_dir.cleanup()
+
     def test_kimi_uses_anthropic_protocol_by_default(self) -> None:
         calls = []
 
@@ -237,6 +292,14 @@ class KimiProviderTest(unittest.TestCase):
                     {"role": "user", "content": "hi"}
                 ])
 
+        records = [
+            json.loads(line)
+            for line in self.error_log_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(records[0]["provider"], "kimi")
+        self.assertIn("max_tokens", records[0]["exception_message"])
+        self.assertFalse(self.success_log_path.exists())
+
     def test_kimi_config_only_exposes_api_key_and_model(self) -> None:
         self.assertEqual(
             [param.to_config_key() for param in Kimi.get_params()],
@@ -286,11 +349,19 @@ class FakeArk:
 class DoubaoTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
-        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.log_path)
+        self.error_log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
+        self.success_log_path = Path(self.temp_dir.name) / "llm_success_requests.jsonl"
+        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.error_log_path)
+        self.success_log_path_patcher = patch.object(
+            error_request_logger,
+            "SUCCESS_LOG_PATH",
+            self.success_log_path,
+        )
         self.log_path_patcher.start()
+        self.success_log_path_patcher.start()
 
     def tearDown(self) -> None:
+        self.success_log_path_patcher.stop()
         self.log_path_patcher.stop()
         self.temp_dir.cleanup()
 
@@ -305,6 +376,18 @@ class DoubaoTest(unittest.TestCase):
         self.assertEqual(result, "doubao-answer")
         self.assertEqual(FakeArk.init_keys, ["key"])
         self.assertEqual(FakeArk.calls, [("ep-1", messages)])
+
+        records = [
+            json.loads(line)
+            for line in self.success_log_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(records[0]["provider"], "doubao")
+        self.assertEqual(records[0]["request_body"], {
+            "model": "ep-1",
+            "messages": messages,
+        })
+        self.assertIsNone(records[0]["response_status_code"])
+        self.assertEqual(records[0]["response_body"], "doubao-answer")
 
     def test_doubao_logs_sdk_exception(self) -> None:
         class FailingArkCompletions:
@@ -326,7 +409,7 @@ class DoubaoTest(unittest.TestCase):
 
         records = [
             json.loads(line)
-            for line in self.log_path.read_text(encoding="utf-8").splitlines()
+            for line in self.error_log_path.read_text(encoding="utf-8").splitlines()
         ]
         self.assertEqual(records[0]["provider"], "doubao")
         self.assertEqual(records[0]["url"], "ark://chat/completions")
@@ -335,6 +418,7 @@ class DoubaoTest(unittest.TestCase):
             "messages": messages,
         })
         self.assertEqual(records[0]["exception_type"], "RuntimeError")
+        self.assertFalse(self.success_log_path.exists())
 
 
 if __name__ == "__main__":

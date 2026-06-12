@@ -25,11 +25,19 @@ class FakeResponse:
 class MiniMaxTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
-        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.log_path)
+        self.error_log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
+        self.success_log_path = Path(self.temp_dir.name) / "llm_success_requests.jsonl"
+        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.error_log_path)
+        self.success_log_path_patcher = patch.object(
+            error_request_logger,
+            "SUCCESS_LOG_PATH",
+            self.success_log_path,
+        )
         self.log_path_patcher.start()
+        self.success_log_path_patcher.start()
 
     def tearDown(self) -> None:
+        self.success_log_path_patcher.stop()
         self.log_path_patcher.stop()
         self.temp_dir.cleanup()
 
@@ -82,6 +90,18 @@ class MiniMaxTest(unittest.TestCase):
         self.assertEqual(calls[0][2]["model"], "MiniMax-M2.5")
         self.assertEqual(calls[0][2]["reasoning_split"], False)
 
+        records = [
+            json.loads(line)
+            for line in self.success_log_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(records[0]["provider"], "minimax")
+        self.assertEqual(records[0]["request_body"], {
+            "model": "MiniMax-M2.5",
+            "messages": [{"role": "user", "content": "hello"}],
+            "reasoning_split": False,
+        })
+        self.assertEqual(records[0]["response_status_code"], 200)
+
     def test_call_api_raises_on_non_200_response(self) -> None:
         client = MiniMax("key", "model")
 
@@ -91,7 +111,7 @@ class MiniMaxTest(unittest.TestCase):
 
         records = [
             json.loads(line)
-            for line in self.log_path.read_text(encoding="utf-8").splitlines()
+            for line in self.error_log_path.read_text(encoding="utf-8").splitlines()
         ]
         self.assertEqual(records[0]["provider"], "minimax")
         self.assertEqual(records[0]["request_body"], {
@@ -101,6 +121,22 @@ class MiniMaxTest(unittest.TestCase):
         })
         self.assertEqual(records[0]["response_body"], "server error")
         self.assertNotIn("key", json.dumps(records[0], ensure_ascii=False))
+        self.assertFalse(self.success_log_path.exists())
+
+    def test_success_log_keeps_latest_300_records(self) -> None:
+        client = MiniMax("key", "model")
+
+        with patch("api.minimax.requests.post", return_value=FakeResponse(200, {"choices": []}, text="ok")):
+            for index in range(301):
+                client._call_api([{"role": "user", "content": str(index)}])
+
+        records = [
+            json.loads(line)
+            for line in self.success_log_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(len(records), 300)
+        self.assertEqual(records[0]["request_body"]["messages"][0]["content"], "1")
+        self.assertEqual(records[-1]["request_body"]["messages"][0]["content"], "300")
 
 
 if __name__ == "__main__":

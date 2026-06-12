@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 import requests
 
 from api.base_api import BaseApi
-from api.error_request_logger import log_llm_error_request
+from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
 
 
@@ -106,15 +106,18 @@ class Kimi(BaseApi):
             log_llm_error_request("kimi", url, data, exception=exception)
             raise
         if response.status_code == 200:
-            result = response.json()
-            choice = result["choices"][0]
-            content = choice["message"].get("content", "")
-            if content:
-                return content
-            if choice.get("finish_reason") == "length":
-                raise Exception(
-                    "Kimi API returned no final content because max_tokens was exhausted"
-                )
+            try:
+                result = response.json()
+                choice = result["choices"][0]
+                content = choice["message"].get("content", "")
+                if not content and choice.get("finish_reason") == "length":
+                    raise Exception(
+                        "Kimi API returned no final content because max_tokens was exhausted"
+                    )
+            except Exception as exception:
+                log_llm_error_request("kimi", url, data, response=response, exception=exception)
+                raise
+            log_llm_success_request("kimi", url, data, response=response)
             return content
         log_llm_error_request("kimi", url, data, response=response)
         raise Exception(f"Kimi API call failed: {response.status_code}, {response.text}")
@@ -135,7 +138,14 @@ class Kimi(BaseApi):
             log_llm_error_request("kimi", url, data, exception=exception)
             raise
         if response.status_code == 200:
-            return self._extract_anthropic_text(response.json())
+            try:
+                result = response.json()
+                response_content = self._extract_anthropic_text(result)
+            except Exception as exception:
+                log_llm_error_request("kimi", url, data, response=response, exception=exception)
+                raise
+            log_llm_success_request("kimi", url, data, response=response)
+            return response_content
         log_llm_error_request("kimi", url, data, response=response)
         raise Exception(f"Kimi API call failed: {response.status_code}, {response.text}")
 

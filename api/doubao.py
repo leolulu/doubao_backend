@@ -3,7 +3,7 @@ from typing import Dict, List
 from volcenginesdkarkruntime import Ark
 
 from api.base_api import BaseApi
-from api.error_request_logger import log_llm_error_request
+from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
 
 
@@ -37,8 +37,14 @@ class Doubao(BaseApi):
         }
         try:
             completion = self.client.chat.completions.create(**request_body)
+            response_content = completion.choices[0].message.content
         except Exception as exception:
             log_llm_error_request("doubao", "ark://chat/completions", request_body, exception=exception)
             raise
-        response_content = completion.choices[0].message.content
+        log_llm_success_request(
+            "doubao",
+            "ark://chat/completions",
+            request_body,
+            response_body=response_content,
+        )
         return response_content

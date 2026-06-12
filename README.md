@@ -559,4 +559,4 @@ API_KEY = another-api-key
 MODEL = another-model
 ```
 
-`BASE_URL` should point to the OpenAI-compatible base path, usually ending with `/v1`; the provider appends `/chat/completions` automatically. `API_KEY` and `MODEL` keep the same comma-separated fallback syntax as the fixed providers. Failed HTTP responses and request exceptions are written to `logs/llm_error_requests.jsonl` through the same error-request logger, without logging the API key.
+`BASE_URL` should point to the OpenAI-compatible base path, usually ending with `/v1`; the provider appends `/chat/completions` automatically. `API_KEY` and `MODEL` keep the same comma-separated fallback syntax as the fixed providers. Failed HTTP responses and request exceptions are written to `logs/llm_error_requests.jsonl`, while successful requests are written to the rolling `logs/llm_success_requests.jsonl` file that keeps the latest 300 records. These request logs do not include the API key.

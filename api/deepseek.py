@@ -3,7 +3,7 @@ from typing import Dict, List
 import requests
 
 from api.base_api import BaseApi
-from api.error_request_logger import log_llm_error_request
+from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
 
 
@@ -74,8 +74,14 @@ class DeepSeek(BaseApi):
             raise
         
         if response.status_code == 200:
-            result = response.json()
-            return result['choices'][0]['message']['content']
+            try:
+                result = response.json()
+                response_content = result['choices'][0]['message']['content']
+            except Exception as exception:
+                log_llm_error_request("deepseek", url, data, response=response, exception=exception)
+                raise
+            log_llm_success_request("deepseek", url, data, response=response)
+            return response_content
         else:
             log_llm_error_request("deepseek", url, data, response=response)
             raise Exception(f"DeepSeek API 调用失败: {response.status_code}, {response.text}")
