@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple
 import requests
 
 from api.base_api import BaseApi
+from api.error_request_logger import log_llm_error_request
 from api.param_schema import ParamType, ProviderParam
 
 
@@ -79,11 +80,16 @@ class MiniMax(BaseApi):
             "reasoning_split": reasoning_split
         }
 
-        response = requests.post(url, headers=headers, json=data)
+        try:
+            response = requests.post(url, headers=headers, json=data)
+        except requests.exceptions.RequestException as exception:
+            log_llm_error_request("minimax", url, data, exception=exception)
+            raise
 
         if response.status_code == 200:
             return response.json()
         else:
+            log_llm_error_request("minimax", url, data, response=response)
             raise Exception(f"MiniMax API 调用失败: {response.status_code}, {response.text}")
 
     @staticmethod

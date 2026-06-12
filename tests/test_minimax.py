@@ -1,10 +1,14 @@
 import typing
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 if not hasattr(typing, "override"):
     typing.override = lambda func: func
 
+import api.error_request_logger as error_request_logger
 from api.minimax import MiniMax
 
 
@@ -19,6 +23,16 @@ class FakeResponse:
 
 
 class MiniMaxTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
+        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.log_path)
+        self.log_path_patcher.start()
+
+    def tearDown(self) -> None:
+        self.log_path_patcher.stop()
+        self.temp_dir.cleanup()
+
     def test_strip_think_tags_removes_reasoning_blocks(self) -> None:
         content = "before <think>hidden reasoning</think> after"
 
@@ -74,6 +88,19 @@ class MiniMaxTest(unittest.TestCase):
         with patch("api.minimax.requests.post", return_value=FakeResponse(500, text="server error")):
             with self.assertRaisesRegex(Exception, "500"):
                 client._call_api([])
+
+        records = [
+            json.loads(line)
+            for line in self.log_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(records[0]["provider"], "minimax")
+        self.assertEqual(records[0]["request_body"], {
+            "model": "model",
+            "messages": [],
+            "reasoning_split": True,
+        })
+        self.assertEqual(records[0]["response_body"], "server error")
+        self.assertNotIn("key", json.dumps(records[0], ensure_ascii=False))
 
 
 if __name__ == "__main__":

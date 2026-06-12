@@ -1,12 +1,18 @@
 import typing
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+import requests
 
 if not hasattr(typing, "override"):
     typing.override = lambda func: func
 
 from api.deepseek import DeepSeek
 from api.doubao import Doubao
+import api.error_request_logger as error_request_logger
 from api.kimi import Kimi
 from api.modelscope import ModelScope
 from api.zhipu import Zhipu
@@ -27,6 +33,22 @@ class FakeResponse:
 
 
 class OpenAICompatibleProviderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
+        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.log_path)
+        self.log_path_patcher.start()
+
+    def tearDown(self) -> None:
+        self.log_path_patcher.stop()
+        self.temp_dir.cleanup()
+
+    def read_error_log(self):
+        return [
+            json.loads(line)
+            for line in self.log_path.read_text(encoding="utf-8").splitlines()
+        ]
+
     def test_deepseek_posts_expected_request_and_returns_content(self) -> None:
         calls = []
 
@@ -79,6 +101,26 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         with patch("api.deepseek.requests.post", return_value=FakeResponse(500, text="server error")):
             with self.assertRaisesRegex(Exception, "500"):
                 DeepSeek("key", "model").reason([])
+
+        records = self.read_error_log()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["provider"], "deepseek")
+        self.assertEqual(records[0]["url"], "https://api.deepseek.com/chat/completions")
+        self.assertEqual(records[0]["request_body"], {"model": "model", "messages": []})
+        self.assertEqual(records[0]["response_status_code"], 500)
+        self.assertEqual(records[0]["response_body"], "server error")
+        self.assertNotIn("key", json.dumps(records[0], ensure_ascii=False))
+
+    def test_deepseek_logs_request_exception(self) -> None:
+        with patch("api.deepseek.requests.post", side_effect=requests.exceptions.ConnectionError("boom")):
+            with self.assertRaisesRegex(requests.exceptions.ConnectionError, "boom"):
+                DeepSeek("key", "model").reason([{"role": "user", "content": "hi"}])
+
+        records = self.read_error_log()
+        self.assertEqual(records[0]["provider"], "deepseek")
+        self.assertEqual(records[0]["request_body"]["messages"][0]["content"], "hi")
+        self.assertEqual(records[0]["exception_type"], "ConnectionError")
+        self.assertEqual(records[0]["exception_message"], "boom")
 
 
 class KimiProviderTest(unittest.TestCase):
@@ -200,6 +242,16 @@ class FakeArk:
 
 
 class DoubaoTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.log_path = Path(self.temp_dir.name) / "llm_error_requests.jsonl"
+        self.log_path_patcher = patch.object(error_request_logger, "LOG_PATH", self.log_path)
+        self.log_path_patcher.start()
+
+    def tearDown(self) -> None:
+        self.log_path_patcher.stop()
+        self.temp_dir.cleanup()
+
     def test_doubao_uses_access_point_as_model(self) -> None:
         FakeArk.calls = []
         FakeArk.init_keys = []
@@ -211,6 +263,36 @@ class DoubaoTest(unittest.TestCase):
         self.assertEqual(result, "doubao-answer")
         self.assertEqual(FakeArk.init_keys, ["key"])
         self.assertEqual(FakeArk.calls, [("ep-1", messages)])
+
+    def test_doubao_logs_sdk_exception(self) -> None:
+        class FailingArkCompletions:
+            def create(self, model, messages):
+                raise RuntimeError("ark failed")
+
+        class FailingArkChat:
+            completions = FailingArkCompletions()
+
+        class FailingArk:
+            def __init__(self, api_key: str) -> None:
+                self.chat = FailingArkChat()
+
+        messages = [{"role": "user", "content": "hi"}]
+
+        with patch("api.doubao.Ark", FailingArk):
+            with self.assertRaisesRegex(RuntimeError, "ark failed"):
+                Doubao("key", "ep-1").reason(messages)
+
+        records = [
+            json.loads(line)
+            for line in self.log_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(records[0]["provider"], "doubao")
+        self.assertEqual(records[0]["url"], "ark://chat/completions")
+        self.assertEqual(records[0]["request_body"], {
+            "model": "ep-1",
+            "messages": messages,
+        })
+        self.assertEqual(records[0]["exception_type"], "RuntimeError")
 
 
 if __name__ == "__main__":

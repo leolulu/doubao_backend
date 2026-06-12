@@ -1,6 +1,7 @@
 credentials.config
 
 __pycache__/
+logs/
 
 
 .opencode/

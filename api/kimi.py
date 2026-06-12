@@ -3,6 +3,7 @@ from typing import Any, Dict, List
 import requests
 
 from api.base_api import BaseApi
+from api.error_request_logger import log_llm_error_request
 from api.param_schema import ParamType, ProviderParam
 
 
@@ -99,7 +100,11 @@ class Kimi(BaseApi):
             "max_tokens": self.max_tokens,
         }
 
-        response = requests.post(url, headers=headers, json=data)
+        try:
+            response = requests.post(url, headers=headers, json=data)
+        except requests.exceptions.RequestException as exception:
+            log_llm_error_request("kimi", url, data, exception=exception)
+            raise
         if response.status_code == 200:
             result = response.json()
             choice = result["choices"][0]
@@ -111,6 +116,7 @@ class Kimi(BaseApi):
                     "Kimi API returned no final content because max_tokens was exhausted"
                 )
             return content
+        log_llm_error_request("kimi", url, data, response=response)
         raise Exception(f"Kimi API call failed: {response.status_code}, {response.text}")
 
     def _reason_anthropic(self, messages: List[Dict[str, str]]) -> str:
@@ -123,9 +129,14 @@ class Kimi(BaseApi):
         }
         data = self._build_anthropic_payload(messages)
 
-        response = requests.post(url, headers=headers, json=data)
+        try:
+            response = requests.post(url, headers=headers, json=data)
+        except requests.exceptions.RequestException as exception:
+            log_llm_error_request("kimi", url, data, exception=exception)
+            raise
         if response.status_code == 200:
             return self._extract_anthropic_text(response.json())
+        log_llm_error_request("kimi", url, data, response=response)
         raise Exception(f"Kimi API call failed: {response.status_code}, {response.text}")
 
     def _anthropic_messages_url(self) -> str:

@@ -3,6 +3,7 @@ from typing import Dict, List
 import requests
 
 from api.base_api import BaseApi
+from api.error_request_logger import log_llm_error_request
 from api.param_schema import ParamType, ProviderParam
 
 
@@ -66,10 +67,15 @@ class ModelScope(BaseApi):
             "messages": messages
         }
 
-        response = requests.post(url, headers=headers, json=data)
+        try:
+            response = requests.post(url, headers=headers, json=data)
+        except requests.exceptions.RequestException as exception:
+            log_llm_error_request("modelscope", url, data, exception=exception)
+            raise
 
         if response.status_code == 200:
             result = response.json()
             return result['choices'][0]['message']['content']
         else:
+            log_llm_error_request("modelscope", url, data, response=response)
             raise Exception(f"ModelScope API 调用失败: {response.status_code}, {response.text}")
