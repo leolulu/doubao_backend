@@ -3,6 +3,7 @@ import os
 from typing import Any, Dict, Optional, Type
 
 from api.base_api import BaseApi
+from api.chat_completion import ChatCompletion
 from api.deepseek import DeepSeek
 from api.doubao import Doubao
 from api.fallback_api import FallbackApi, FallbackEntry
@@ -18,6 +19,7 @@ class ApiFactory:
     """Factory for configured AI provider clients."""
 
     FEISHU_WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/b06a606f-9cc9-4033-bed8-8ff2e65ecec9"
+    CHAT_COMPLETION_PREFIX = "chat_completion:"
 
     def __init__(self):
         self._clients: Dict[str, BaseApi] = {}
@@ -47,6 +49,7 @@ class ApiFactory:
 
         lines.append("[designated_provider]")
         lines.append("# AI provider names in fallback priority order.")
+        lines.append("# Generic Chat Completion example: PROVIDER = chat_completion:provider_name")
         lines.append("# 单供应商示例: PROVIDER = doubao")
         lines.append("# 供应商回退链示例: PROVIDER = doubao,zhipu,kimi")
         lines.append("# 按从左到右的顺序尝试供应商，不要留下空项。")
@@ -56,6 +59,9 @@ class ApiFactory:
         for provider_name, provider_class in self._provider_classes.items():
             lines.extend(self._build_provider_config_lines(provider_name, provider_class))
             lines.append("")
+
+        lines.extend(self._build_provider_config_lines("chat_completion:provider_name", ChatCompletion))
+        lines.append("")
 
         with open(credential_file, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
@@ -106,9 +112,13 @@ class ApiFactory:
         if duplicated:
             raise ValueError(f"[designated_provider] PROVIDER 配置包含重复供应商: {', '.join(duplicated)}")
 
-        unknown = [provider for provider in providers if provider not in self._provider_classes]
+        unknown = [
+            provider
+            for provider in providers
+            if not self._is_known_provider(provider)
+        ]
         if unknown:
-            available_providers = ", ".join(self._provider_classes.keys())
+            available_providers = self._format_available_provider_names()
             raise ValueError(
                 f"[designated_provider] PROVIDER 包含未知供应商: {', '.join(unknown)}，"
                 f"可用的服务商: {available_providers}"
@@ -128,8 +138,8 @@ class ApiFactory:
         provider_name: str,
         credential_file: str,
     ) -> None:
-        section_name = provider_name.upper()
-        provider_class = self._provider_classes[provider_name]
+        section_name = self._get_provider_section_name(provider_name)
+        provider_class = self._get_provider_class(provider_name)
 
         if not config.has_section(section_name):
             self._ensure_provider_config(provider_name, credential_file)
@@ -147,6 +157,9 @@ class ApiFactory:
             elif param.default is not None:
                 provider_config[param.name] = param.default
 
+        if self._is_chat_completion_provider(provider_name):
+            provider_config["provider_name"] = provider_name
+
         is_valid, errors = provider_class.validate_config(provider_config)
         if not is_valid:
             error_msg = f"服务商 [{section_name}] 配置错误:\n" + "\n".join(f"  - {e}" for e in errors)
@@ -161,11 +174,11 @@ class ApiFactory:
         else:
             lines = []
 
-        section_name = provider_name.upper()
+        section_name = self._get_provider_section_name(provider_name)
         section_exists = any(f"[{section_name}]" in line for line in lines)
 
         if not section_exists:
-            provider_class = self._provider_classes.get(provider_name.lower())
+            provider_class = self._get_provider_class(provider_name)
             if provider_class:
                 lines.append("\n")
                 lines.extend(self._build_provider_config_lines(
@@ -214,11 +227,13 @@ class ApiFactory:
                 "回退语法: ACCESS_POINT = ep-a,ep-b",
                 "每个 API_KEY 下按从左到右的顺序尝试访问点。",
             ])
+        elif config_key == "BASE_URL":
+            comments.append("Use the OpenAI-compatible base URL, usually ending with /v1.")
         return comments
 
     def _register_designated_provider(self):
         for provider_name in self._designated_providers:
-            self._register_provider(provider_name, self._provider_classes[provider_name])
+            self._register_provider(provider_name, self._get_provider_class(provider_name))
         self._default_client = self._build_default_client(self._designated_providers)
 
     def _register_provider(
@@ -243,7 +258,7 @@ class ApiFactory:
         for provider_name in providers:
             client = self._build_configured_provider_client(
                 provider_name,
-                self._provider_classes[provider_name],
+                self._get_provider_class(provider_name),
                 failure_handlers=[],
             )
             entries.append(ProviderFallbackEntry(provider_name=provider_name, client=client))
@@ -402,3 +417,36 @@ class ApiFactory:
 
     def list_providers(self) -> list[str]:
         return list(self._clients.keys())
+
+    def _is_chat_completion_provider(self, provider_name: str) -> bool:
+        return (
+            provider_name.startswith(self.CHAT_COMPLETION_PREFIX)
+            and len(provider_name) > len(self.CHAT_COMPLETION_PREFIX)
+        )
+
+    def _is_known_provider(self, provider_name: str) -> bool:
+        return (
+            provider_name in self._provider_classes
+            or self._is_chat_completion_provider(provider_name)
+        )
+
+    def _get_provider_class(self, provider_name: str) -> Type[BaseApi]:
+        normalized_name = provider_name.lower()
+        if self._is_chat_completion_provider(normalized_name):
+            return ChatCompletion
+
+        provider_class = self._provider_classes.get(normalized_name)
+        if provider_class is None:
+            available_providers = self._format_available_provider_names()
+            raise ValueError(
+                f"未知服务商 '{provider_name}'，可用的服务商: {available_providers}"
+            )
+        return provider_class
+
+    def _get_provider_section_name(self, provider_name: str) -> str:
+        return provider_name.upper()
+
+    def _format_available_provider_names(self) -> str:
+        available_providers = list(self._provider_classes.keys())
+        available_providers.append(f"{self.CHAT_COMPLETION_PREFIX}<alias>")
+        return ", ".join(available_providers)

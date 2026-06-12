@@ -8,6 +8,7 @@ if not hasattr(typing, "override"):
 
 from api.api_factory import ApiFactory
 from api.base_api import BaseApi
+from api.chat_completion import ChatCompletion
 from api.fallback_api import FallbackApi
 from api.kimi import Kimi
 from api.param_schema import ParamType, ProviderParam
@@ -76,6 +77,10 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         factory = self.make_factory()
 
         self.assertEqual(factory._parse_designated_providers(' P1 , "p2" '), ["p1", "p2"])
+        self.assertEqual(
+            factory._parse_designated_providers(" chat_completion:provider_name "),
+            ["chat_completion:provider_name"],
+        )
 
         invalid_values = ["p1,,p2", "p1,p1", "p4"]
         for invalid_value in invalid_values:
@@ -123,6 +128,42 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertEqual(factory._credentials["p1"], {"api_key": "key-1", "model": "model-1"})
         self.assertEqual(factory._credentials["p2"], {"api_key": "key-2", "model": "model-2"})
 
+    def test_load_config_supports_named_chat_completion_provider(self) -> None:
+        factory = self.make_factory()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with open("credentials.config", "w", encoding="utf-8") as config_file:
+                    config_file.write(
+                        "\n".join([
+                            "[designated_provider]",
+                            "PROVIDER = chat_completion:provider_name,p1",
+                            "",
+                            "[CHAT_COMPLETION:PROVIDER_NAME]",
+                            "BASE_URL = https://example.com/v1",
+                            "API_KEY = key-1,key-2",
+                            "MODEL = model-1,model-2",
+                            "",
+                            "[P1]",
+                            "API_KEY = key-3",
+                            "MODEL = model-3",
+                        ])
+                    )
+
+                factory._load_config()
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(factory.get_designated_providers(), ["chat_completion:provider_name", "p1"])
+        self.assertEqual(factory._credentials["chat_completion:provider_name"], {
+            "base_url": "https://example.com/v1",
+            "api_key": "key-1,key-2",
+            "model": "model-1,model-2",
+            "provider_name": "chat_completion:provider_name",
+        })
+
     def test_create_minimal_config_documents_fallback_syntax(self) -> None:
         factory = self.make_factory({"p1": FakeProvider, "p2": FakeAccessPointProvider})
 
@@ -133,6 +174,11 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
 
             with open(config_path, encoding="utf-8") as config_file:
                 content = config_file.read()
+
+        self.assertIn("# Generic Chat Completion example: PROVIDER = chat_completion:provider_name", content)
+        self.assertIn("[CHAT_COMPLETION:PROVIDER_NAME]", content)
+        self.assertIn("# Use the OpenAI-compatible base URL, usually ending with /v1.", content)
+        self.assertIn("BASE_URL =", content)
 
         self.assertIn("# 供应商回退链示例: PROVIDER = doubao,zhipu,kimi", content)
         self.assertIn("# 回退语法: API_KEY = key-a,key-b", content)
@@ -169,6 +215,33 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
             finally:
                 os.chdir(previous_cwd)
 
+    def test_load_config_adds_missing_chat_completion_section(self) -> None:
+        factory = self.make_factory()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with open("credentials.config", "w", encoding="utf-8") as config_file:
+                    config_file.write(
+                        "\n".join([
+                            "[designated_provider]",
+                            "PROVIDER = chat_completion:provider_name",
+                        ])
+                    )
+
+                with self.assertRaises(UserWarning):
+                    factory._load_config()
+
+                with open("credentials.config", encoding="utf-8") as config_file:
+                    content = config_file.read()
+                    self.assertIn("[CHAT_COMPLETION:PROVIDER_NAME]", content)
+                    self.assertIn("BASE_URL =", content)
+                    self.assertIn("API_KEY =", content)
+                    self.assertIn("MODEL =", content)
+            finally:
+                os.chdir(previous_cwd)
+
     def test_default_client_is_provider_chain_and_request_provider_overrides_it(self) -> None:
         factory = self.make_factory()
         factory._credentials.update({
@@ -184,6 +257,37 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertIsInstance(factory.get_client("p1"), FallbackApi)
         self.assertIsInstance(factory.get_client("p2"), RetryingApi)
         self.assertEqual(factory.list_providers(), ["p1", "p2"])
+
+    def test_default_client_registers_chat_completion_provider_with_model_fallback(self) -> None:
+        factory = self.make_factory()
+        factory._credentials.update({
+            "chat_completion:provider_name": {
+                "base_url": "https://example.com/v1",
+                "api_key": "key-1,key-2",
+                "model": "model-1,model-2",
+                "provider_name": "chat_completion:provider_name",
+            },
+        })
+        factory._set_designated_providers(["chat_completion:provider_name"])
+
+        factory._register_designated_provider()
+
+        client = factory.get_client("chat_completion:provider_name")
+        self.assertIsInstance(client, FallbackApi)
+        self.assertEqual(factory.list_providers(), ["chat_completion:provider_name"])
+        self.assertEqual(
+            [entry.target for entry in client.entries],
+            [
+                "api_key#1:model-1",
+                "api_key#1:model-2",
+                "api_key#2:model-1",
+                "api_key#2:model-2",
+            ],
+        )
+        first_client = client.entries[0].client.client
+        self.assertIsInstance(first_client, ChatCompletion)
+        self.assertEqual(first_client.provider_name, "chat_completion:provider_name")
+        self.assertEqual(first_client.base_url, "https://example.com/v1")
 
     def test_provider_chain_sends_switch_notification_without_inner_fallback_notification(self) -> None:
         events = []

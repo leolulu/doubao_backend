@@ -10,6 +10,7 @@ import requests
 if not hasattr(typing, "override"):
     typing.override = lambda func: func
 
+from api.chat_completion import ChatCompletion
 from api.deepseek import DeepSeek
 from api.doubao import Doubao
 import api.error_request_logger as error_request_logger
@@ -79,6 +80,29 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(calls[0][1]["Authorization"], "Bearer token")
         self.assertEqual(calls[0][2]["model"], "namespace/model")
 
+    def test_generic_chat_completion_posts_expected_request_and_returns_content(self) -> None:
+        calls = []
+
+        def post(url, headers, json):
+            calls.append((url, headers, json))
+            return FakeResponse(200)
+
+        with patch("api.chat_completion.requests.post", side_effect=post):
+            result = ChatCompletion(
+                "https://example.test/v1/",
+                "secret-key",
+                "namespace/model",
+                provider_name="chat_completion:custom",
+            ).reason([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(result, "provider-answer")
+        self.assertEqual(calls[0][0], "https://example.test/v1/chat/completions")
+        self.assertEqual(calls[0][1]["Authorization"], "Bearer secret-key")
+        self.assertEqual(calls[0][2], {
+            "model": "namespace/model",
+            "messages": [{"role": "user", "content": "hi"}],
+        })
+
     def test_zhipu_uses_configured_endpoint_and_temperature(self) -> None:
         calls = []
 
@@ -121,6 +145,24 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(records[0]["request_body"]["messages"][0]["content"], "hi")
         self.assertEqual(records[0]["exception_type"], "ConnectionError")
         self.assertEqual(records[0]["exception_message"], "boom")
+
+    def test_generic_chat_completion_logs_non_200_response(self) -> None:
+        with patch("api.chat_completion.requests.post", return_value=FakeResponse(500, text="server error")):
+            with self.assertRaisesRegex(Exception, "500"):
+                ChatCompletion(
+                    "https://example.test/v1",
+                    "secret-key",
+                    "model",
+                    provider_name="chat_completion:custom",
+                ).reason([])
+
+        records = self.read_error_log()
+        self.assertEqual(records[0]["provider"], "chat_completion:custom")
+        self.assertEqual(records[0]["url"], "https://example.test/v1/chat/completions")
+        self.assertEqual(records[0]["request_body"], {"model": "model", "messages": []})
+        self.assertEqual(records[0]["response_status_code"], 500)
+        self.assertEqual(records[0]["response_body"], "server error")
+        self.assertNotIn("secret-key", json.dumps(records[0], ensure_ascii=False))
 
 
 class KimiProviderTest(unittest.TestCase):
