@@ -110,9 +110,11 @@ def _stream_chat_using_parameters(id, system_message, user_message, preserve, pr
 @app.route("/", methods=["POST"])
 def process_chat_request_port():
     payload = request.get_json()
+    if not isinstance(payload, dict):
+        return "请求体必须是 JSON 对象", 400
     id = payload.get("id")
     system_message = payload.get("system_message")
-    user_message = payload["user_message"]
+    user_message = payload.get("user_message")
     preserve = payload.get("preserve")
     provider = payload.get("provider")
 
@@ -133,9 +135,11 @@ def process_chat_request_get():
 @app.route("/stream", methods=["POST"])
 def process_stream_chat_request_post():
     payload = request.get_json()
+    if not isinstance(payload, dict):
+        return "请求体必须是 JSON 对象", 400
     id = payload.get("id")
     system_message = payload.get("system_message")
-    user_message = payload["user_message"]
+    user_message = payload.get("user_message")
     preserve = payload.get("preserve")
     provider = payload.get("provider")
 

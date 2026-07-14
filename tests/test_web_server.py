@@ -166,6 +166,37 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("user_message", response.get_data(as_text=True))
 
+    def test_post_missing_user_message_returns_400(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        for path in ["/", "/stream"]:
+            with self.subTest(path=path):
+                response = client.post(path, json={})
+
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("user_message", response.get_data(as_text=True))
+
+        self.assertEqual(web_server.sm.requests, [])
+
+    def test_post_requires_json_object(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        for path in ["/", "/stream"]:
+            for payload in [[], None, "text"]:
+                with self.subTest(path=path, payload=payload):
+                    response = client.post(
+                        path,
+                        data=json.dumps(payload),
+                        content_type="application/json",
+                    )
+
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn("JSON", response.get_data(as_text=True))
+
+        self.assertEqual(web_server.sm.requests, [])
+
     def test_inspect_returns_all_session_ids_and_messages(self) -> None:
         web_server = self.load_server_module()
         client = web_server.app.test_client()
