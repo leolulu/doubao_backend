@@ -135,6 +135,29 @@ uv run --with-requirements requirements.txt python -B -m unittest discover -s te
 curl "http://localhost:11301/?id=conversation-001&user_message=你好&preserve=true"
 ```
 
+#### 使用 GET 连续多轮对话
+
+GET 的所有参数都位于查询字符串中。包含中文或其他特殊字符时，建议使用 `curl --get --data-urlencode` 自动进行 URL 编码。
+
+第一轮设置固定的会话 ID、开启历史追加，并按需设置系统提示词：
+
+```bash
+curl --get "http://localhost:11301/" \
+  --data-urlencode "id=conversation-001" \
+  --data-urlencode "preserve=true" \
+  --data-urlencode "system_message=你是一个友好的助手" \
+  --data-urlencode "user_message=我叫小明"
+```
+
+第二轮继续使用相同的 `id` 和 `preserve=true`，已经设置的 `system_message` 可以省略：
+
+```bash
+curl --get "http://localhost:11301/" \
+  --data-urlencode "id=conversation-001" \
+  --data-urlencode "preserve=true" \
+  --data-urlencode "user_message=我叫什么？"
+```
+
 #### POST 请求
 
 ```bash
@@ -148,7 +171,7 @@ curl -X POST http://localhost:11301/ \
   }'
 ```
 
-#### 连续多轮对话
+#### 使用 POST 连续多轮对话
 
 第一轮设置固定的会话 ID、开启历史追加，并按需设置系统提示词：
 
@@ -174,6 +197,12 @@ curl -X POST http://localhost:11301/ \
     "user_message": "我叫什么？"
   }'
 ```
+
+#### GET 和 POST 如何选择
+
+- GET 适合短消息、浏览器直接访问或临时调试。查询参数需要进行 URL 编码，并可能出现在浏览器历史、服务器访问日志或代理日志中。
+- POST 将参数放在 JSON 请求体中，更适合较长的用户消息和系统提示词，也能减少消息内容直接暴露在 URL 及常见访问日志中的情况。
+- 正式调用推荐使用 POST；无论选择 GET 还是 POST，多轮对话都需要保持相同的 `id` 并持续传入 `preserve=true`。
 
 #### 指定服务商
 
