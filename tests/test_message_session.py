@@ -1,5 +1,6 @@
 import typing
 import unittest
+from threading import Event, Lock, Thread
 
 if not hasattr(typing, "override"):
     typing.override = lambda func: func
@@ -17,6 +18,40 @@ class RecordingClient(BaseApi):
     def reason(self, messages: list[dict[str, str]]) -> str:
         self.calls.append(messages)
         return self.response
+
+
+class StreamingClient(RecordingClient):
+    def __init__(self, chunks: list[object]) -> None:
+        super().__init__()
+        self.chunks = chunks
+
+    def reason_stream(self, messages: list[dict[str, str]]):
+        self.calls.append(messages)
+        for chunk in self.chunks:
+            if isinstance(chunk, Exception):
+                raise chunk
+            yield str(chunk)
+
+
+class CoordinatedStreamingClient(RecordingClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_lock = Lock()
+        self.first_started = Event()
+        self.release_first = Event()
+        self.second_started = Event()
+        self.call_count = 0
+
+    def reason_stream(self, messages: list[dict[str, str]]):
+        with self.call_lock:
+            self.call_count += 1
+            call_number = self.call_count
+        if call_number == 1:
+            self.first_started.set()
+            self.release_first.wait(timeout=2)
+        else:
+            self.second_started.set()
+        yield f"answer-{call_number}"
 
 
 class FakeApiFactory:
@@ -82,6 +117,62 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(session.messages.messages, [
             {"role": "system", "content": "new-system"},
         ])
+
+    def test_stream_preserves_only_after_complete_response(self) -> None:
+        client = StreamingClient(["hel", "lo"])
+        session = Session("s1", client, Message("system"))
+
+        self.assertEqual(
+            list(session.chat_stream("question", preserve=True)),
+            ["hel", "lo"],
+        )
+        self.assertEqual(session.messages.messages, [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "hello"},
+        ])
+
+    def test_stream_failure_does_not_preserve_partial_response(self) -> None:
+        client = StreamingClient(["partial", RuntimeError("interrupted")])
+        session = Session("s1", client, Message())
+
+        stream = session.chat_stream("question", preserve=True)
+        self.assertEqual(next(stream), "partial")
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            next(stream)
+
+        self.assertEqual(session.messages.messages, [])
+
+    def test_closing_stream_does_not_preserve_partial_response(self) -> None:
+        client = StreamingClient(["partial", "remaining"])
+        session = Session("s1", client, Message())
+
+        stream = session.chat_stream("question", preserve=True)
+        self.assertEqual(next(stream), "partial")
+        stream.close()
+
+        self.assertEqual(session.messages.messages, [])
+
+    def test_same_session_requests_are_serialized(self) -> None:
+        client = CoordinatedStreamingClient()
+        session = Session("s1", client, Message())
+        results: list[list[str]] = []
+
+        first = Thread(target=lambda: results.append(list(session.chat_stream("first"))))
+        second = Thread(target=lambda: results.append(list(session.chat_stream("second"))))
+        first.start()
+        self.assertTrue(client.first_started.wait(timeout=1))
+        second.start()
+
+        self.assertFalse(client.second_started.wait(timeout=0.1))
+        client.release_first.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertTrue(client.second_started.is_set())
+        self.assertEqual(results, [["answer-1"], ["answer-2"]])
 
 
 class SessionManagerTest(unittest.TestCase):

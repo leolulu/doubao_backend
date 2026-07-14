@@ -14,6 +14,7 @@ from api.retrying_api import (
     RetryingApi,
     RetryEvent,
 )
+from api.streaming import IncompleteStreamError
 
 
 class SequenceClient(BaseApi):
@@ -27,6 +28,18 @@ class SequenceClient(BaseApi):
         if isinstance(outcome, Exception):
             raise outcome
         return str(outcome)
+
+
+class StreamingSequenceClient(SequenceClient):
+    def reason_stream(self, messages: list[dict[str, str]]):
+        self.calls += 1
+        outcomes = self.outcomes.pop(0)
+        if isinstance(outcomes, Exception):
+            raise outcomes
+        for outcome in outcomes:
+            if isinstance(outcome, Exception):
+                raise outcome
+            yield str(outcome)
 
 
 class FakeResponse:
@@ -103,6 +116,61 @@ class RetryingApiTest(unittest.TestCase):
 
         self.assertEqual([event.will_retry for event in events], [True, False])
         self.assertEqual([event.attempt_number for event in events], [1, 2])
+
+    def test_stream_retries_before_first_visible_chunk(self) -> None:
+        events = []
+        client = StreamingSequenceClient([
+            requests.exceptions.Timeout(),
+            ["ok"],
+        ])
+        retrying = RetryingApi(
+            "provider",
+            client,
+            max_retries=1,
+            retry_delay_seconds=0,
+            failure_handlers=[events.append],
+        )
+
+        self.assertEqual(list(retrying.reason_stream([])), ["ok"])
+        self.assertEqual(client.calls, 2)
+        self.assertEqual([event.will_retry for event in events], [True])
+
+    def test_stream_retries_incomplete_response_before_content(self) -> None:
+        client = StreamingSequenceClient([
+            IncompleteStreamError("incomplete"),
+            ["ok"],
+        ])
+        retrying = RetryingApi(
+            "provider",
+            client,
+            max_retries=1,
+            retry_delay_seconds=0,
+        )
+
+        self.assertEqual(list(retrying.reason_stream([])), ["ok"])
+        self.assertEqual(client.calls, 2)
+
+    def test_stream_does_not_retry_after_visible_chunk(self) -> None:
+        events = []
+        client = StreamingSequenceClient([
+            ["partial", requests.exceptions.Timeout()],
+            ["second-attempt"],
+        ])
+        retrying = RetryingApi(
+            "provider",
+            client,
+            max_retries=1,
+            retry_delay_seconds=0,
+            failure_handlers=[events.append],
+        )
+
+        stream = retrying.reason_stream([])
+        self.assertEqual(next(stream), "partial")
+        with self.assertRaises(requests.exceptions.Timeout):
+            next(stream)
+
+        self.assertEqual(client.calls, 1)
+        self.assertEqual([event.will_retry for event in events], [False])
 
 
 class FeishuNotifierTest(unittest.TestCase):

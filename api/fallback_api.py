@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import override
 
@@ -45,6 +45,47 @@ class FallbackApi(BaseApi):
             targets=[entry.target for entry in self.entries],
             exceptions=exceptions,
             secret_values=tuple(secret for entry in self.entries for secret in entry.secrets),
+        )
+        self._handle_failure(event)
+        self._attach_fallback_event(exceptions[-1], event)
+        raise exceptions[-1]
+
+    @override
+    def reason_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        exceptions: list[Exception] = []
+        attempted_entries: list[FallbackEntry] = []
+
+        for entry in self.entries:
+            attempted_entries.append(entry)
+            yielded_content = False
+            stream = None
+            try:
+                stream = entry.client.reason_stream(messages)
+                for chunk in stream:
+                    if not chunk:
+                        continue
+                    yielded_content = True
+                    yield chunk
+                return
+            except Exception as exception:
+                exceptions.append(exception)
+                if yielded_content:
+                    break
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+
+        event = FallbackEvent(
+            provider_name=self.provider_name,
+            will_retry=False,
+            targets=[entry.target for entry in attempted_entries],
+            exceptions=exceptions,
+            secret_values=tuple(
+                secret
+                for entry in attempted_entries
+                for secret in entry.secrets
+            ),
         )
         self._handle_failure(event)
         self._attach_fallback_event(exceptions[-1], event)

@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from typing import Dict, List
 
 import requests
@@ -5,6 +6,7 @@ import requests
 from api.base_api import BaseApi
 from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
+from api.streaming import stream_chat_completion
 
 
 class Zhipu(BaseApi):
@@ -86,3 +88,22 @@ class Zhipu(BaseApi):
         else:
             log_llm_error_request("zhipu", url, data, response=response)
             raise Exception(f"API调用失败: {response.status_code}, {response.text}")
+
+    def reason_stream(self, messages: List[Dict[str, str]]) -> Iterator[str]:
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        data = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 1.0,
+        }
+        yield from stream_chat_completion(
+            provider="zhipu",
+            url=url,
+            headers=headers,
+            request_body=data,
+            error_prefix="API调用失败",
+        )

@@ -98,7 +98,7 @@ uv run python -B -m unittest discover -s tests -v
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `id` | string | 否 | 会话 ID；连续多轮请求必须使用同一个值。不提供时服务端会自动生成，但当前响应不会返回生成的 ID |
+| `id` | string | 否 | 会话 ID；连续多轮请求必须使用同一个值。不提供时服务端会自动生成；流式接口会在 `session` 事件中返回生成的 ID，非流式接口仍只返回模型回答 |
 | `system_message` | string | 否 | 系统提示词；在同一会话中会持续生效，传入新的非空值会替换旧值 |
 | `preserve` | boolean/string | 否 | 是否在模型成功回答后，将本轮 `user` 和 `assistant` 消息追加到会话历史；POST 推荐使用布尔值，字符串兼容 `true/1/yes`，默认 `false` |
 | `provider` | string | 否 | AI 服务商名称，仅在创建新会话时使用；不提供则使用默认服务商 |
@@ -115,7 +115,7 @@ uv run python -B -m unittest discover -s tests -v
 
 因此，连续且完整的多轮对话需要每一轮都使用相同的 `id`，并传入 `preserve=true`。POST JSON 使用布尔值 `true`，GET 查询参数使用字符串 `true`。如果某一轮省略 `preserve`，下一轮将看不到被省略保存的那一轮问答。
 
-不传 `id` 时，每次请求都会创建新的随机 ID。由于当前接口响应只包含模型回答，不返回自动生成的 ID，客户端无法继续该自动创建的会话。此时即使传入 `preserve=true`，各次请求仍是彼此独立的会话。
+调用非流式 `/` 接口且不传 `id` 时，每次请求都会创建新的随机 ID。由于非流式响应只包含模型回答，客户端无法继续该自动创建的会话。调用 `/stream` 时，服务端会通过首个 `session` 事件返回实际 ID，客户端可以在后续请求中继续使用。
 
 会话及其消息历史只保存在当前服务进程的内存中。服务重启后历史会丢失，目前没有持久化、自动过期或历史长度限制。
 
@@ -207,6 +207,88 @@ curl -X POST http://localhost:11301/ \
 - POST 将参数放在 JSON 请求体中，更适合较长的用户消息和系统提示词，也能减少消息内容直接暴露在 URL 及常见访问日志中的情况。
 - 正式调用推荐使用 POST；无论选择 GET 还是 POST，多轮对话都需要保持相同的 `id` 并持续传入 `preserve=true`。
 
+### 流式接口
+
+流式接口使用 `/stream`，支持 GET 和 POST，请求参数及多轮会话语义与非流式 `/` 完全相同。响应类型为 `text/event-stream`，每个 SSE 事件的 `data` 都是一个 JSON 对象。
+
+推荐使用 POST。`curl` 增加 `-N` 可以关闭客户端输出缓冲，让内容到达后立即显示：
+
+```bash
+curl -N -X POST http://localhost:11301/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "conversation-001",
+    "preserve": true,
+    "system_message": "你是一个友好的助手",
+    "user_message": "请介绍一下你自己"
+  }'
+```
+
+GET 的调用方式只需将路径改为 `/stream`：
+
+```bash
+curl -N --get "http://localhost:11301/stream" \
+  --data-urlencode "id=conversation-001" \
+  --data-urlencode "preserve=true" \
+  --data-urlencode "user_message=请介绍一下你自己"
+```
+
+响应示例：
+
+```text
+data: {"type": "session", "id": "conversation-001"}
+
+data: {"type": "delta", "content": "你"}
+
+data: {"type": "delta", "content": "好"}
+
+data: {"type": "done", "preserved": true}
+
+```
+
+事件类型：
+
+| `type` | 说明 |
+|--------|------|
+| `session` | 本次请求实际使用的会话 ID；未传 `id` 时应保存这里返回的自动生成 ID |
+| `delta` | 本次新增的回答文本，按到达顺序直接拼接 `content` 即可 |
+| `done` | 流正常结束；`preserved` 表示本轮是否已写入会话历史 |
+| `error` | 流开始后上游响应中断；该事件之后连接结束，不会出现 `done` |
+
+请求参数无效时会在流开始前直接返回 HTTP 400；上游在首个可见文本前失败且重试、回退仍无法成功时直接返回 HTTP 502。此时响应不是 SSE 事件流。
+
+Python 请求方只需在原有请求上增加 `stream=True` 并逐行解析：
+
+```python
+import json
+
+import requests
+
+
+with requests.post(
+    "http://localhost:11301/stream",
+    json={
+        "id": "conversation-001",
+        "preserve": True,
+        "user_message": "你好",
+    },
+    stream=True,
+) as response:
+    response.raise_for_status()
+    for line in response.iter_lines(decode_unicode=True):
+        if not line.startswith("data: "):
+            continue
+        event = json.loads(line.removeprefix("data: "))
+        if event["type"] == "delta":
+            print(event["content"], end="", flush=True)
+        elif event["type"] == "error":
+            raise RuntimeError(event["message"])
+```
+
+流式输出只包含最终回答，不包含各服务商可能返回的 reasoning/thinking 内容。同一个会话 ID 的请求会串行执行，避免并发请求打乱历史顺序。
+
+`preserve=true` 只在流正常完成后写入完整问答。客户端断开、上游中途失败或收到 `error` 时，残缺回答不会进入历史。首个可见文本到达前仍允许现有的重试和服务商回退；已经向客户端输出文本后不会再透明切换模型或服务商，避免把两份回答拼接在一起。
+
 #### 指定服务商
 
 ```bash
@@ -240,6 +322,7 @@ curl -X POST http://localhost:11301/ \
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/` | GET/POST | 发送聊天请求 |
+| `/stream` | GET/POST | 发送流式聊天请求，返回 SSE 事件流 |
 | `/help` | GET | 查看帮助信息 |
 | `/inspect` | GET | 查看所有会话的 ID 和消息历史 |
 
@@ -259,7 +342,7 @@ curl -X POST http://localhost:11301/ \
 
 ### 浏览器跨域访问
 
-服务端已对所有路由启用全局 CORS，允许任意来源跨域访问。浏览器前端可以从不同的域名、主机或端口直接调用 `/`、`/help` 和 `/inspect`；使用 `Content-Type: application/json` 的 POST 请求所需的 OPTIONS 预检也已支持。
+服务端已对所有路由启用全局 CORS，允许任意来源跨域访问。浏览器前端可以从不同的域名、主机或端口直接调用 `/`、`/stream`、`/help` 和 `/inspect`；使用 `Content-Type: application/json` 的 POST 请求所需的 OPTIONS 预检也已支持。
 
 当前跨域配置不限制来源，也没有启用跨域凭证。curl、PowerShell、Python 及服务端之间的 HTTP 请求不受浏览器 CORS 机制影响。
 
@@ -351,7 +434,7 @@ MODEL = 另一个模型名称
 ```
 ┌─────────────────────────────────────────┐
 │         Web Server (Flask)              │
-│  - /help, /inspect, / (GET/POST)       │
+│  - /help, /inspect, /, /stream         │
 └──────────────┬──────────────────────────┘
                 │
 ┌──────────────▼──────────────────────────┐

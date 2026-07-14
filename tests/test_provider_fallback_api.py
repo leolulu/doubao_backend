@@ -30,6 +30,13 @@ class SuccessfulClient(BaseApi):
         return self.response
 
 
+class PartialStreamingClient(SuccessfulClient):
+    def reason_stream(self, messages: list[dict[str, str]]):
+        self.calls += 1
+        yield "partial"
+        raise RuntimeError("stream interrupted")
+
+
 class ProviderFallbackApiTest(unittest.TestCase):
     def test_switches_provider_and_reports_failed_inner_targets(self) -> None:
         events = []
@@ -108,6 +115,54 @@ class ProviderFallbackApiTest(unittest.TestCase):
         self.assertEqual(events, [])
         self.assertEqual(first_provider.calls, 1)
         self.assertEqual(second_provider.calls, 0)
+
+    def test_model_fallback_stream_switches_before_visible_content(self) -> None:
+        fallback = FallbackApi(
+            "p1",
+            [
+                FallbackEntry("model-a", FailingClient("HTTP 500")),
+                FallbackEntry("model-b", SuccessfulClient("from-model-b")),
+            ],
+            failure_handlers=[],
+        )
+
+        self.assertEqual(list(fallback.reason_stream([])), ["from-model-b"])
+
+    def test_provider_stream_switches_before_visible_content(self) -> None:
+        events = []
+        first_provider = FailingClient("HTTP 500")
+        second_provider = SuccessfulClient("from-p2")
+        chain = ProviderFallbackApi(
+            [
+                ProviderFallbackEntry("p1", first_provider),
+                ProviderFallbackEntry("p2", second_provider),
+            ],
+            failure_handlers=[events.append],
+        )
+
+        self.assertEqual(list(chain.reason_stream([])), ["from-p2"])
+        self.assertEqual([type(event) for event in events], [ProviderSwitchEvent])
+
+    def test_provider_stream_does_not_switch_after_visible_content(self) -> None:
+        events = []
+        first_provider = PartialStreamingClient()
+        second_provider = SuccessfulClient("from-p2")
+        chain = ProviderFallbackApi(
+            [
+                ProviderFallbackEntry("p1", first_provider),
+                ProviderFallbackEntry("p2", second_provider),
+            ],
+            failure_handlers=[events.append],
+        )
+
+        stream = chain.reason_stream([])
+        self.assertEqual(next(stream), "partial")
+        with self.assertRaisesRegex(RuntimeError, "stream interrupted"):
+            next(stream)
+
+        self.assertEqual(second_provider.calls, 0)
+        self.assertEqual([type(event) for event in events], [ProviderFallbackEvent])
+        self.assertEqual(events[0].providers, ["p1"])
 
 
 if __name__ == "__main__":

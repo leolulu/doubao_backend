@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from typing import Dict, List
 
 from volcenginesdkarkruntime import Ark
@@ -5,6 +6,7 @@ from volcenginesdkarkruntime import Ark
 from api.base_api import BaseApi
 from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
+from api.streaming import IncompleteStreamError
 
 
 class Doubao(BaseApi):
@@ -48,3 +50,51 @@ class Doubao(BaseApi):
             response_body=response_content,
         )
         return response_content
+
+    def reason_stream(self, messages: List[Dict[str, str]]) -> Iterator[str]:
+        request_body = {
+            "model": self.access_point,
+            "messages": messages,
+            "stream": True,
+        }
+        completion = None
+        chunks: list[str] = []
+        completed = False
+
+        try:
+            completion = self.client.chat.completions.create(**request_body)
+            for chunk in completion:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                choice = choices[0]
+                if getattr(choice, "finish_reason", None) is not None:
+                    completed = True
+                delta = getattr(choice, "delta", None)
+                content = getattr(delta, "content", None)
+                if isinstance(content, str) and content:
+                    chunks.append(content)
+                    yield content
+            if not completed:
+                raise IncompleteStreamError("上游流式响应在完成标记前结束")
+        except Exception as exception:
+            log_llm_error_request(
+                "doubao",
+                "ark://chat/completions",
+                request_body,
+                response_body="".join(chunks),
+                exception=exception,
+            )
+            raise
+        finally:
+            close = getattr(completion, "close", None)
+            if callable(close):
+                close()
+
+        if completed:
+            log_llm_success_request(
+                "doubao",
+                "ark://chat/completions",
+                request_body,
+                response_body="".join(chunks),
+            )

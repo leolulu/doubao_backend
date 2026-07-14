@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from typing import Any, Dict, List
 
 import requests
@@ -5,6 +6,7 @@ import requests
 from api.base_api import BaseApi
 from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
+from api.streaming import stream_chat_completion
 
 
 class ChatCompletion(BaseApi):
@@ -85,6 +87,24 @@ class ChatCompletion(BaseApi):
         log_llm_error_request(self.provider_name, url, data, response=response)
         raise Exception(
             f"Chat Completion API call failed: {response.status_code}, {response.text}"
+        )
+
+    def reason_stream(self, messages: List[Dict[str, str]]) -> Iterator[str]:
+        url = self._chat_completions_url()
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        data = {
+            "model": self.model,
+            "messages": messages,
+        }
+        yield from stream_chat_completion(
+            provider=self.provider_name,
+            url=url,
+            headers=headers,
+            request_body=data,
+            error_prefix="Chat Completion API call failed",
         )
 
     def _chat_completions_url(self) -> str:

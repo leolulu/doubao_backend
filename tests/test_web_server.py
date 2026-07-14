@@ -1,4 +1,5 @@
 import importlib
+import json
 import sys
 import typing
 import unittest
@@ -21,6 +22,7 @@ class FakeSession:
         self.adjusted_system_messages: list[str] = []
         self.chat_once_calls: list[str] = []
         self.chat_preserving_history_calls: list[str] = []
+        self.chat_stream_calls: list[tuple[str, bool, str | None]] = []
 
     def adjust_system_message(self, system_message: str) -> None:
         self.adjusted_system_messages.append(system_message)
@@ -32,6 +34,37 @@ class FakeSession:
     def chat_preserving_history(self, message: str) -> str:
         self.chat_preserving_history_calls.append(message)
         return f"preserve:{message}:{self.provider}"
+
+    def chat(
+        self,
+        question: str,
+        *,
+        preserve: bool = False,
+        system_message: str | None = None,
+    ) -> str:
+        if system_message:
+            self.adjust_system_message(system_message)
+        if preserve:
+            return self.chat_preserving_history(question)
+        return self.chat_once(question)
+
+    def chat_stream(
+        self,
+        question: str,
+        *,
+        preserve: bool = False,
+        system_message: str | None = None,
+    ):
+        self.chat_stream_calls.append((question, preserve, system_message))
+        if self.provider == "fail-before-chunk":
+            raise RuntimeError("failed before chunk")
+        yield "stream:"
+        if self.provider == "fail-after-chunk":
+            raise RuntimeError("failed after chunk")
+        yield question
+
+    def snapshot_messages(self):
+        return list(self.messages.messages)
 
 
 class FakeSessionManager:
@@ -46,6 +79,9 @@ class FakeSessionManager:
             self.pool[session_id] = FakeSession(session_id, provider)
         return self.pool[session_id]
 
+    def list_sessions(self):
+        return list(self.pool.values())
+
 
 class WebServerTest(unittest.TestCase):
     def load_server_module(self):
@@ -54,6 +90,13 @@ class WebServerTest(unittest.TestCase):
             module = importlib.import_module("server.web_server")
         self.addCleanup(lambda: sys.modules.pop("server.web_server", None))
         return module
+
+    def parse_sse_events(self, response) -> list[dict]:
+        return [
+            json.loads(line.removeprefix("data: "))
+            for line in response.get_data(as_text=True).splitlines()
+            if line.startswith("data: ")
+        ]
 
     def test_post_chat_preserves_history_and_passes_provider(self) -> None:
         web_server = self.load_server_module()
@@ -179,6 +222,73 @@ class WebServerTest(unittest.TestCase):
             "Content-Type",
             response.headers.get("Access-Control-Allow-Headers"),
         )
+
+    def test_post_stream_uses_same_parameters_and_returns_sse(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.post("/stream", json={
+            "id": "s-stream",
+            "system_message": "system",
+            "user_message": "hello",
+            "preserve": True,
+            "provider": "p1",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content_type, "text/event-stream; charset=utf-8")
+        self.assertEqual(response.headers.get("Cache-Control"), "no-cache")
+        self.assertEqual(response.headers.get("X-Accel-Buffering"), "no")
+        self.assertEqual(self.parse_sse_events(response), [
+            {"type": "session", "id": "s-stream"},
+            {"type": "delta", "content": "stream:"},
+            {"type": "delta", "content": "hello"},
+            {"type": "done", "preserved": True},
+        ])
+        session = web_server.sm.pool["s-stream"]
+        self.assertEqual(session.chat_stream_calls, [("hello", True, "system")])
+
+    def test_get_stream_returns_generated_session_id(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.get("/stream?user_message=hello")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.parse_sse_events(response)[0], {
+            "type": "session",
+            "id": "generated",
+        })
+
+    def test_stream_failure_before_first_chunk_returns_502(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.get(
+            "/stream?user_message=hello&provider=fail-before-chunk"
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.get_data(as_text=True), "模型流式调用失败")
+
+    def test_stream_failure_after_first_chunk_returns_error_event(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.get(
+            "/stream?user_message=hello&provider=fail-after-chunk"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.parse_sse_events(response), [
+            {"type": "session", "id": "generated"},
+            {"type": "delta", "content": "stream:"},
+            {
+                "type": "error",
+                "code": "upstream_interrupted",
+                "message": "模型流式响应中断",
+            },
+        ])
 
 
 if __name__ == "__main__":

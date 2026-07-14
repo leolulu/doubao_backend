@@ -1,4 +1,6 @@
-from flask import Flask, jsonify, request
+import json
+
+from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 
 from models.session_manager import SessionManager
@@ -25,8 +27,8 @@ def home():
 @app.route("/inspect", methods=["GET"])
 def inspect_all_messages():
     return jsonify([
-        {"id": session.id, "messages": session.messages.messages}
-        for session in sm.pool.values()
+        {"id": session.id, "messages": session.snapshot_messages()}
+        for session in sm.list_sessions()
     ])
 
 
@@ -45,15 +47,64 @@ def _chat_using_parameters(id, system_message, user_message, preserve, provider)
     preserve = _should_preserve_history(preserve)
 
     session = sm.get_or_create_session(id, provider=provider)
-    if system_message:
-        session.adjust_system_message(system_message)
-
-    if preserve:
-        answer = session.chat_preserving_history(user_message)
-    else:
-        answer = session.chat_once(user_message)
+    answer = session.chat(
+        user_message,
+        preserve=preserve,
+        system_message=system_message,
+    )
 
     return str(answer)
+
+
+def _encode_sse_event(payload):
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _stream_chat_using_parameters(id, system_message, user_message, preserve, provider):
+    if not user_message:
+        return "缺少必填参数: user_message", 400
+
+    preserve = _should_preserve_history(preserve)
+    session = sm.get_or_create_session(id, provider=provider)
+    stream = session.chat_stream(
+        user_message,
+        preserve=preserve,
+        system_message=system_message,
+    )
+
+    try:
+        first_chunk = next(stream)
+    except StopIteration:
+        first_chunk = None
+    except Exception:
+        return "模型流式调用失败", 502
+
+    @stream_with_context
+    def generate():
+        try:
+            yield _encode_sse_event({"type": "session", "id": session.id})
+            if first_chunk is not None:
+                yield _encode_sse_event({"type": "delta", "content": first_chunk})
+            for chunk in stream:
+                yield _encode_sse_event({"type": "delta", "content": chunk})
+            yield _encode_sse_event({"type": "done", "preserved": preserve})
+        except GeneratorExit:
+            raise
+        except Exception:
+            yield _encode_sse_event({
+                "type": "error",
+                "code": "upstream_interrupted",
+                "message": "模型流式响应中断",
+            })
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
+
+    response = Response(generate(), content_type="text/event-stream; charset=utf-8")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
 
 
 @app.route("/", methods=["POST"])
@@ -77,3 +128,38 @@ def process_chat_request_get():
     provider = request.args.get("provider")
 
     return _chat_using_parameters(id, system_message, user_message, preserve, provider)
+
+
+@app.route("/stream", methods=["POST"])
+def process_stream_chat_request_post():
+    payload = request.get_json()
+    id = payload.get("id")
+    system_message = payload.get("system_message")
+    user_message = payload["user_message"]
+    preserve = payload.get("preserve")
+    provider = payload.get("provider")
+
+    return _stream_chat_using_parameters(
+        id,
+        system_message,
+        user_message,
+        preserve,
+        provider,
+    )
+
+
+@app.route("/stream", methods=["GET"])
+def process_stream_chat_request_get():
+    id = request.args.get("id")
+    system_message = request.args.get("system_message")
+    user_message = request.args.get("user_message")
+    preserve = request.args.get("preserve")
+    provider = request.args.get("provider")
+
+    return _stream_chat_using_parameters(
+        id,
+        system_message,
+        user_message,
+        preserve,
+        provider,
+    )

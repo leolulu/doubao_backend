@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from typing import Any, Dict, List, Optional
 
 from api.param_schema import ProviderParam
@@ -68,3 +69,7 @@ class BaseApi(ABC):
     def reason(self, messages: List[Dict[str, str]]) -> str:
         """推理方法，必须由子类实现"""
         pass
+
+    def reason_stream(self, messages: List[Dict[str, str]]) -> Iterator[str]:
+        """流式推理；旧 provider 默认退化为单个完整响应。"""
+        yield self.reason(messages)

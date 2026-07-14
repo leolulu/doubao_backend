@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from typing import Any, Dict, List
 
 import requests
@@ -5,6 +6,7 @@ import requests
 from api.base_api import BaseApi
 from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
+from api.streaming import stream_chat_completion
 
 
 class Kimi(BaseApi):
@@ -80,6 +82,12 @@ class Kimi(BaseApi):
             return self._reason_openai(messages)
         return self._reason_anthropic(messages)
 
+    def reason_stream(self, messages: List[Dict[str, str]]) -> Iterator[str]:
+        if self.protocol == "openai":
+            yield from self._reason_openai_stream(messages)
+            return
+        yield from self._reason_anthropic_stream(messages)
+
     def _resolve_base_url(self, base_url: str) -> str:
         if base_url:
             return base_url.rstrip("/")
@@ -122,6 +130,27 @@ class Kimi(BaseApi):
         log_llm_error_request("kimi", url, data, response=response)
         raise Exception(f"Kimi API call failed: {response.status_code}, {response.text}")
 
+    def _reason_openai_stream(self, messages: List[Dict[str, str]]) -> Iterator[str]:
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": self.USER_AGENT,
+        }
+        data = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": self.max_tokens,
+        }
+        yield from stream_chat_completion(
+            provider="kimi",
+            url=url,
+            headers=headers,
+            request_body=data,
+            error_prefix="Kimi API call failed",
+            protocol="openai",
+        )
+
     def _reason_anthropic(self, messages: List[Dict[str, str]]) -> str:
         url = self._anthropic_messages_url()
         headers = {
@@ -148,6 +177,23 @@ class Kimi(BaseApi):
             return response_content
         log_llm_error_request("kimi", url, data, response=response)
         raise Exception(f"Kimi API call failed: {response.status_code}, {response.text}")
+
+    def _reason_anthropic_stream(self, messages: List[Dict[str, str]]) -> Iterator[str]:
+        url = self._anthropic_messages_url()
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": self.anthropic_version,
+            "Content-Type": "application/json",
+            "User-Agent": self.USER_AGENT,
+        }
+        yield from stream_chat_completion(
+            provider="kimi",
+            url=url,
+            headers=headers,
+            request_body=self._build_anthropic_payload(messages),
+            error_prefix="Kimi API call failed",
+            protocol="anthropic",
+        )
 
     def _anthropic_messages_url(self) -> str:
         if self.base_url.endswith("/v1"):

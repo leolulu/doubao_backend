@@ -1,4 +1,6 @@
 import uuid
+from collections.abc import Iterator
+from threading import Lock, RLock
 from typing import Dict, Optional
 
 from api.api_factory import ApiFactory
@@ -11,26 +13,95 @@ class Session:
         self.id = id
         self.messages = messages
         self.client = client
+        self._conversation_lock = Lock()
+        self._messages_lock = RLock()
 
     def chat_once(self, question: str):
-        return self.client.reason(self.messages.generate_messages_jar(question))
+        return self.chat(question)
 
     def chat_preserving_history(self, message: str):
-        response_content = self.chat_once(message)
-        self.messages.preserve_history(message, response_content)
-        return response_content
+        return self.chat(message, preserve=True)
+
+    def chat(
+        self,
+        question: str,
+        *,
+        preserve: bool = False,
+        system_message: str | None = None,
+    ) -> str:
+        with self._conversation_lock:
+            if system_message:
+                self._adjust_system_message(system_message)
+            with self._messages_lock:
+                request_messages = self.messages.generate_messages_jar(question)
+            response_content = self.client.reason(
+                request_messages
+            )
+            if preserve:
+                with self._messages_lock:
+                    self.messages.preserve_history(question, response_content)
+            return response_content
+
+    def chat_stream_once(self, question: str) -> Iterator[str]:
+        yield from self.chat_stream(question)
+
+    def chat_stream_preserving_history(self, message: str) -> Iterator[str]:
+        yield from self.chat_stream(message, preserve=True)
+
+    def chat_stream(
+        self,
+        question: str,
+        *,
+        preserve: bool = False,
+        system_message: str | None = None,
+    ) -> Iterator[str]:
+        with self._conversation_lock:
+            if system_message:
+                self._adjust_system_message(system_message)
+
+            chunks: list[str] = []
+            with self._messages_lock:
+                request_messages = self.messages.generate_messages_jar(question)
+            stream = self.client.reason_stream(request_messages)
+            try:
+                for chunk in stream:
+                    if not chunk:
+                        continue
+                    chunks.append(chunk)
+                    yield chunk
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+
+            if preserve:
+                with self._messages_lock:
+                    self.messages.preserve_history(question, "".join(chunks))
 
     def clear_history(self):
-        self.messages._messages_user_and_assistant_part = []
+        with self._messages_lock:
+            self.messages._messages_user_and_assistant_part = []
 
     def adjust_system_message(self, system_message: str):
-        self.messages._messages_system_part = [self.messages.construct_system_message(system_message)]
+        with self._messages_lock:
+            self._adjust_system_message(system_message)
+
+    def _adjust_system_message(self, system_message: str):
+        with self._messages_lock:
+            self.messages._messages_system_part = [
+                self.messages.construct_system_message(system_message)
+            ]
+
+    def snapshot_messages(self):
+        with self._messages_lock:
+            return list(self.messages.messages)
 
 
 class SessionManager:
     def __init__(self, api_factory: Optional[ApiFactory] = None) -> None:
         self.pool: Dict[str, Session] = dict()
         self.api_factory = api_factory or ApiFactory()
+        self._lock = RLock()
 
     def new_session(self, id=None, system_message=None, provider=None):
         """
@@ -44,12 +115,13 @@ class SessionManager:
         Returns:
             Session 实例
         """
-        if not id:
-            id = str(uuid.uuid4())
-        client = self.api_factory.get_client(provider)
-        session = Session(id, client, Message(system_message))
-        self.pool[id] = session
-        return session
+        with self._lock:
+            if not id:
+                id = str(uuid.uuid4())
+            client = self.api_factory.get_client(provider)
+            session = Session(id, client, Message(system_message))
+            self.pool[id] = session
+            return session
 
     def get_or_create_session(self, id=None, provider=None):
         """
@@ -62,7 +134,11 @@ class SessionManager:
         Returns:
             Session 实例
         """
-        if id not in self.pool:
-            return self.new_session(id, provider=provider)
-        else:
+        with self._lock:
+            if id not in self.pool:
+                return self.new_session(id, provider=provider)
             return self.pool[id]
+
+    def list_sessions(self):
+        with self._lock:
+            return list(self.pool.values())

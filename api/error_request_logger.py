@@ -17,9 +17,17 @@ def log_llm_error_request(
     url: str,
     request_body: Any,
     response: requests.Response | None = None,
+    response_body: Any = None,
     exception: Exception | None = None,
 ) -> None:
-    record = _build_record(provider, url, request_body, response=response, exception=exception)
+    record = _build_record(
+        provider,
+        url,
+        request_body,
+        response=response,
+        response_body=response_body,
+        exception=exception,
+    )
 
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)

@@ -1,11 +1,13 @@
 import re
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Callable, cast, override
 
 import requests
 
 from api.base_api import BaseApi
+from api.streaming import IncompleteStreamError
 
 
 @dataclass(frozen=True)
@@ -245,7 +247,48 @@ class RetryingApi(BaseApi):
 
         raise RuntimeError("重试流程异常结束")
 
+    @override
+    def reason_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        for retry_count in range(self.max_retries + 1):
+            yielded_content = False
+            stream = None
+            try:
+                stream = self.client.reason_stream(messages)
+                for chunk in stream:
+                    if not chunk:
+                        continue
+                    yielded_content = True
+                    yield chunk
+                return
+            except Exception as exception:
+                will_retry = (
+                    not yielded_content
+                    and retry_count < self.max_retries
+                    and self._should_retry(exception)
+                )
+                self._handle_failure(
+                    RetryEvent(
+                        provider_name=self.provider_name,
+                        will_retry=will_retry,
+                        attempt_number=retry_count + 1,
+                        max_retries=self.max_retries,
+                        delay_seconds=self.retry_delay_seconds if will_retry else 0,
+                        exception=exception,
+                    )
+                )
+                if not will_retry:
+                    raise
+                self.sleeper(self.retry_delay_seconds)
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+
+        raise RuntimeError("流式重试流程异常结束")
+
     def _should_retry(self, exception: Exception) -> bool:
+        if isinstance(exception, IncompleteStreamError):
+            return True
         if isinstance(exception, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
             return True
 

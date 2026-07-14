@@ -15,6 +15,7 @@ from api.deepseek import DeepSeek
 from api.doubao import Doubao
 import api.error_request_logger as error_request_logger
 from api.kimi import Kimi
+from api.minimax import MiniMax
 from api.modelscope import ModelScope
 from api.zhipu import Zhipu
 
@@ -201,6 +202,59 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(records[0]["response_body"], "server error")
         self.assertNotIn("secret-key", json.dumps(records[0], ensure_ascii=False))
 
+    def test_openai_compatible_providers_delegate_streaming_parameters(self) -> None:
+        messages = [{"role": "user", "content": "hi"}]
+        cases = [
+            (
+                "api.deepseek.stream_chat_completion",
+                DeepSeek("key", "deepseek-chat"),
+                {"provider": "deepseek", "model": "deepseek-chat"},
+            ),
+            (
+                "api.modelscope.stream_chat_completion",
+                ModelScope("key", "namespace/model"),
+                {"provider": "modelscope", "model": "namespace/model"},
+            ),
+            (
+                "api.zhipu.stream_chat_completion",
+                Zhipu("key", "glm-4.7"),
+                {"provider": "zhipu", "model": "glm-4.7"},
+            ),
+            (
+                "api.chat_completion.stream_chat_completion",
+                ChatCompletion(
+                    "https://example.test/v1",
+                    "key",
+                    "custom-model",
+                    provider_name="chat_completion:custom",
+                ),
+                {"provider": "chat_completion:custom", "model": "custom-model"},
+            ),
+            (
+                "api.minimax.stream_chat_completion",
+                MiniMax("key", "MiniMax-M2.5"),
+                {"provider": "minimax", "model": "MiniMax-M2.5"},
+            ),
+        ]
+
+        for patch_path, client, expected in cases:
+            with self.subTest(provider=expected["provider"]):
+                with patch(patch_path, return_value=iter(["chunk"])) as stream:
+                    self.assertEqual(list(client.reason_stream(messages)), ["chunk"])
+
+                kwargs = stream.call_args.kwargs
+                self.assertEqual(kwargs["provider"], expected["provider"])
+                self.assertEqual(kwargs["request_body"]["model"], expected["model"])
+                self.assertEqual(kwargs["request_body"]["messages"], messages)
+
+        with patch(
+            "api.minimax.stream_chat_completion",
+            return_value=iter(["chunk"]),
+        ) as stream:
+            list(MiniMax("key", "MiniMax-M2.5").reason_stream(messages))
+        self.assertTrue(stream.call_args.kwargs["cumulative_content"])
+        self.assertTrue(stream.call_args.kwargs["request_body"]["reasoning_split"])
+
 
 class KimiProviderTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -310,6 +364,31 @@ class KimiProviderTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported Kimi protocol"):
             Kimi("key", protocol="bad")
 
+    def test_kimi_streams_with_openai_and_anthropic_protocols(self) -> None:
+        messages = [{"role": "user", "content": "hi"}]
+
+        with patch(
+            "api.kimi.stream_chat_completion",
+            return_value=iter(["openai"]),
+        ) as openai_stream:
+            result = list(Kimi("key", protocol="openai").reason_stream(messages))
+
+        self.assertEqual(result, ["openai"])
+        self.assertEqual(openai_stream.call_args.kwargs["protocol"], "openai")
+        self.assertEqual(
+            openai_stream.call_args.kwargs["request_body"]["messages"],
+            messages,
+        )
+
+        with patch(
+            "api.kimi.stream_chat_completion",
+            return_value=iter(["anthropic"]),
+        ) as anthropic_stream:
+            result = list(Kimi("key").reason_stream(messages))
+
+        self.assertEqual(result, ["anthropic"])
+        self.assertEqual(anthropic_stream.call_args.kwargs["protocol"], "anthropic")
+
 
 class FakeArkCompletionMessage:
     content = "doubao-answer"
@@ -323,11 +402,42 @@ class FakeArkCompletion:
     choices = [FakeArkCompletionChoice()]
 
 
+class FakeArkStreamDelta:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class FakeArkStreamChoice:
+    def __init__(self, content: str, finish_reason=None) -> None:
+        self.delta = FakeArkStreamDelta(content)
+        self.finish_reason = finish_reason
+
+
+class FakeArkStreamChunk:
+    def __init__(self, content: str, finish_reason=None) -> None:
+        self.choices = [FakeArkStreamChoice(content, finish_reason)]
+
+
+class FakeArkStream:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def __iter__(self):
+        yield FakeArkStreamChunk("doubao-")
+        yield FakeArkStreamChunk("stream", finish_reason="stop")
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class FakeArkCompletions:
     def __init__(self, calls) -> None:
         self.calls = calls
 
-    def create(self, model, messages):
+    def create(self, model, messages, stream=False):
+        if stream:
+            self.calls.append((model, messages, stream))
+            return FakeArkStream()
         self.calls.append((model, messages))
         return FakeArkCompletion()
 
@@ -419,6 +529,22 @@ class DoubaoTest(unittest.TestCase):
         })
         self.assertEqual(records[0]["exception_type"], "RuntimeError")
         self.assertFalse(self.success_log_path.exists())
+
+    def test_doubao_streams_sdk_chunks(self) -> None:
+        FakeArk.calls = []
+        messages = [{"role": "user", "content": "hi"}]
+
+        with patch("api.doubao.Ark", FakeArk):
+            result = list(Doubao("key", "ep-1").reason_stream(messages))
+
+        self.assertEqual(result, ["doubao-", "stream"])
+        self.assertEqual(FakeArk.calls, [("ep-1", messages, True)])
+        records = [
+            json.loads(line)
+            for line in self.success_log_path.read_text(encoding="utf-8").splitlines()
+        ]
+        self.assertEqual(records[0]["response_body"], "doubao-stream")
+        self.assertTrue(records[0]["request_body"]["stream"])
 
 
 if __name__ == "__main__":

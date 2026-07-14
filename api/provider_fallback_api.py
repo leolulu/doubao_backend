@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import override
 
@@ -49,6 +49,47 @@ class ProviderFallbackApi(BaseApi):
             provider_name=self.provider_name,
             will_retry=False,
             providers=[entry.provider_name for entry in self.entries],
+            exceptions=exceptions,
+            secret_values=self._collect_secret_values(exceptions),
+        )
+        self._handle_failure(event)
+        raise exceptions[-1]
+
+    @override
+    def reason_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        exceptions: list[Exception] = []
+        attempted_entries: list[ProviderFallbackEntry] = []
+
+        for index, entry in enumerate(self.entries):
+            attempted_entries.append(entry)
+            yielded_content = False
+            stream = None
+            try:
+                stream = entry.client.reason_stream(messages)
+                for chunk in stream:
+                    if not chunk:
+                        continue
+                    yielded_content = True
+                    yield chunk
+                return
+            except Exception as exception:
+                exceptions.append(exception)
+                if yielded_content:
+                    break
+                next_entry = self._next_entry(index)
+                if next_entry is not None:
+                    self._handle_failure(
+                        self._build_switch_event(entry, next_entry, exception)
+                    )
+            finally:
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    close()
+
+        event = ProviderFallbackEvent(
+            provider_name=self.provider_name,
+            will_retry=False,
+            providers=[entry.provider_name for entry in attempted_entries],
             exceptions=exceptions,
             secret_values=self._collect_secret_values(exceptions),
         )
