@@ -63,7 +63,7 @@ class WebServerTest(unittest.TestCase):
             "id": "s1",
             "system_message": "system",
             "user_message": "hello",
-            "preserve": "true",
+            "preserve": True,
             "provider": "p1",
         })
 
@@ -72,6 +72,33 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual(web_server.sm.requests, [("s1", "p1")])
         session = web_server.sm.pool["s1"]
         self.assertEqual(session.adjusted_system_messages, ["system"])
+        self.assertEqual(session.chat_preserving_history_calls, ["hello"])
+        self.assertEqual(session.chat_once_calls, [])
+
+    def test_post_chat_boolean_false_uses_chat_once(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.post("/", json={
+            "id": "s2",
+            "user_message": "hello",
+            "preserve": False,
+            "provider": "p2",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        session = web_server.sm.pool["s2"]
+        self.assertEqual(session.chat_once_calls, ["hello"])
+        self.assertEqual(session.chat_preserving_history_calls, [])
+
+    def test_get_chat_accepts_string_preserve(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.get("/?id=s3&user_message=hello&preserve=yes&provider=p1")
+
+        self.assertEqual(response.status_code, 200)
+        session = web_server.sm.pool["s3"]
         self.assertEqual(session.chat_preserving_history_calls, ["hello"])
         self.assertEqual(session.chat_once_calls, [])
 

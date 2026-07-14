@@ -25,11 +25,19 @@ def inspect_all_messages():
     return jsonify([m.messages.messages for m in sm.pool.values()])
 
 
+def _should_preserve_history(preserve):
+    if isinstance(preserve, bool):
+        return preserve
+    if isinstance(preserve, str):
+        return preserve.strip().lower() in ["true", "1", "yes"]
+    return False
+
+
 def _chat_using_parameters(id, system_message, user_message, preserve, provider):
     if not user_message:
         return "缺少必填参数: user_message", 400
 
-    preserve = preserve.lower() in ["true", "1", "yes"] if preserve else False
+    preserve = _should_preserve_history(preserve)
 
     session = sm.get_or_create_session(id, provider=provider)
     if system_message:

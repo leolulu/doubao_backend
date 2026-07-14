@@ -97,7 +97,7 @@ uv run --with-requirements requirements.txt python -B -m unittest discover -s te
 |------|------|------|------|
 | `id` | string | 否 | 会话 ID；连续多轮请求必须使用同一个值。不提供时服务端会自动生成，但当前响应不会返回生成的 ID |
 | `system_message` | string | 否 | 系统提示词；在同一会话中会持续生效，传入新的非空值会替换旧值 |
-| `preserve` | string | 否 | 是否在模型成功回答后，将本轮 `user` 和 `assistant` 消息追加到会话历史；支持 `true/1/yes`，默认 `false` |
+| `preserve` | boolean/string | 否 | 是否在模型成功回答后，将本轮 `user` 和 `assistant` 消息追加到会话历史；POST 推荐使用布尔值，字符串兼容 `true/1/yes`，默认 `false` |
 | `provider` | string | 否 | AI 服务商名称，仅在创建新会话时使用；不提供则使用默认服务商 |
 | `user_message` | string | 是 | 用户消息 |
 
@@ -110,7 +110,7 @@ uv run --with-requirements requirements.txt python -B -m unittest discover -s te
 - 无论本轮是否传入 `preserve=true`，请求都会读取该会话中已经保存的历史；`preserve` 只控制是否追加本轮问答。
 - `preserve=false` 或省略 `preserve` 不会清除已有历史，只会让本轮问答不进入历史。
 
-因此，连续且完整的多轮对话需要每一轮都使用相同的 `id`，并传入字符串形式的 `"preserve": "true"`。如果某一轮省略 `preserve`，下一轮将看不到被省略保存的那一轮问答。
+因此，连续且完整的多轮对话需要每一轮都使用相同的 `id`，并传入 `preserve=true`。POST JSON 使用布尔值 `true`，GET 查询参数使用字符串 `true`。如果某一轮省略 `preserve`，下一轮将看不到被省略保存的那一轮问答。
 
 不传 `id` 时，每次请求都会创建新的随机 ID。由于当前接口响应只包含模型回答，不返回自动生成的 ID，客户端无法继续该自动创建的会话。此时即使传入 `preserve=true`，各次请求仍是彼此独立的会话。
 
@@ -143,7 +143,7 @@ curl -X POST http://localhost:11301/ \
   -d '{
     "id": "conversation-001",
     "user_message": "你好",
-    "preserve": "true",
+    "preserve": true,
     "system_message": "你是一个友好的助手"
   }'
 ```
@@ -157,20 +157,20 @@ curl -X POST http://localhost:11301/ \
   -H "Content-Type: application/json" \
   -d '{
     "id": "conversation-001",
-    "preserve": "true",
+    "preserve": true,
     "system_message": "你是一个友好的助手",
     "user_message": "我叫小明"
   }'
 ```
 
-后续每一轮继续使用相同的 `id` 和 `"preserve": "true"`。已经设置的 `system_message` 可以省略：
+后续每一轮继续使用相同的 `id` 和 `preserve=true`。已经设置的 `system_message` 可以省略：
 
 ```bash
 curl -X POST http://localhost:11301/ \
   -H "Content-Type: application/json" \
   -d '{
     "id": "conversation-001",
-    "preserve": "true",
+    "preserve": true,
     "user_message": "我叫什么？"
   }'
 ```
