@@ -19,8 +19,10 @@
 ### 1. 安装依赖
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
+
+依赖声明在 `pyproject.toml` 中，并由 `uv.lock` 锁定版本。直接使用 `uv run` 启动程序或运行测试时，uv 也会自动创建或更新项目目录下的 `.venv` 并同步依赖，因此通常无需单独执行 `uv sync`。
 
 ### 2. 配置 API 凭证
 
@@ -75,17 +77,17 @@ MODEL =
 ### 3. 启动服务
 
 ```bash
-python main.py
+uv run python main.py
 ```
 
 服务将在 `http://0.0.0.0:11301` 启动。
 
 ### 4. 运行测试
 
-当前测试使用 Python 标准库 `unittest`，通过 `uv` 按 `requirements.txt` 准备依赖并运行：
+当前测试使用 Python 标准库 `unittest`。`uv run` 会按 `pyproject.toml` 和 `uv.lock` 自动准备依赖并运行：
 
 ```bash
-uv run --with-requirements requirements.txt python -B -m unittest discover -s tests -v
+uv run python -B -m unittest discover -s tests -v
 ```
 
 当前测试重点覆盖配置校验、供应商回退、请求重试、飞书通知、消息与会话管理、HTTP 网关入口，以及各服务商请求适配层。
@@ -573,7 +575,8 @@ MODEL = "kimi-k2.6"  # 也可以配置 kimi-k2.6,kimi-for-coding 做模型回退
 ```
 doubao_backend/
 ├── main.py                    # 入口文件
-├── requirements.txt           # 依赖包
+├── pyproject.toml             # Python 版本与依赖声明
+├── uv.lock                    # uv 依赖锁定文件
 ├── credentials.config         # API 凭证配置（自动生成）
 ├── api/
 │   ├── base_api.py           # AI 接口抽象基类
