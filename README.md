@@ -7,6 +7,7 @@
 - ✅ 支持多 AI 服务商（豆包、智谱、DeepSeek、MiniMax、Kimi Code）
 - ✅ 会话管理和历史记录
 - ✅ RESTful API 接口（GET/POST）
+- ✅ 允许任意来源的浏览器跨域访问（CORS）
 - ✅ 可扩展架构，轻松添加新的 AI 服务商
 - ✅ 支持系统消息设置
 - ✅ 支持按会话选择是否追加对话历史
@@ -239,6 +240,12 @@ curl -X POST http://localhost:11301/ \
 | `/` | GET/POST | 发送聊天请求 |
 | `/help` | GET | 查看帮助信息 |
 | `/inspect` | GET | 查看所有会话的消息历史 |
+
+### 浏览器跨域访问
+
+服务端已对所有路由启用全局 CORS，允许任意来源跨域访问。浏览器前端可以从不同的域名、主机或端口直接调用 `/`、`/help` 和 `/inspect`；使用 `Content-Type: application/json` 的 POST 请求所需的 OPTIONS 预检也已支持。
+
+当前跨域配置不限制来源，也没有启用跨域凭证。curl、PowerShell、Python 及服务端之间的 HTTP 请求不受浏览器 CORS 机制影响。
 
 ## 支持的 AI 服务商
 

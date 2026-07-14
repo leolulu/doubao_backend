@@ -142,6 +142,41 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("provider", response.get_data(as_text=True))
 
+    def test_get_response_allows_cross_origin_access(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.get("/help", headers={
+            "Origin": "http://intranet.example",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("Access-Control-Allow-Origin"),
+            "http://intranet.example",
+        )
+
+    def test_post_preflight_allows_content_type_header(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.options("/", headers={
+            "Origin": "http://intranet.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Content-Type",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("Access-Control-Allow-Origin"),
+            "http://intranet.example",
+        )
+        self.assertIn("POST", response.headers.get("Access-Control-Allow-Methods"))
+        self.assertIn(
+            "Content-Type",
+            response.headers.get("Access-Control-Allow-Headers"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
