@@ -24,7 +24,10 @@ def home():
 
 @app.route("/inspect", methods=["GET"])
 def inspect_all_messages():
-    return jsonify([m.messages.messages for m in sm.pool.values()])
+    return jsonify([
+        {"id": session.id, "messages": session.messages.messages}
+        for session in sm.pool.values()
+    ])
 
 
 def _should_preserve_history(preserve):

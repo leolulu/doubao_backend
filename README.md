@@ -241,7 +241,21 @@ curl -X POST http://localhost:11301/ \
 |------|------|------|
 | `/` | GET/POST | 发送聊天请求 |
 | `/help` | GET | 查看帮助信息 |
-| `/inspect` | GET | 查看所有会话的消息历史 |
+| `/inspect` | GET | 查看所有会话的 ID 和消息历史 |
+
+`GET /inspect` 返回当前进程内存中的全部会话，例如：
+
+```json
+[
+  {
+    "id": "conversation-001",
+    "messages": [
+      {"role": "user", "content": "你好"},
+      {"role": "assistant", "content": "你好，有什么可以帮你？"}
+    ]
+  }
+]
+```
 
 ### 浏览器跨域访问
 

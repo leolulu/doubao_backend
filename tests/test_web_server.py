@@ -123,7 +123,7 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("user_message", response.get_data(as_text=True))
 
-    def test_inspect_returns_all_session_messages(self) -> None:
+    def test_inspect_returns_all_session_ids_and_messages(self) -> None:
         web_server = self.load_server_module()
         client = web_server.app.test_client()
         web_server.sm.get_or_create_session("s1", provider="p1")
@@ -131,7 +131,10 @@ class WebServerTest(unittest.TestCase):
         response = client.get("/inspect")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), [[{"role": "user", "content": "stored"}]])
+        self.assertEqual(response.get_json(), [{
+            "id": "s1",
+            "messages": [{"role": "user", "content": "stored"}],
+        }])
 
     def test_help_endpoint_lists_provider_parameter(self) -> None:
         web_server = self.load_server_module()
