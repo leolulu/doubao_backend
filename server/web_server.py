@@ -34,6 +34,13 @@ def inspect_all_messages():
     ])
 
 
+@app.route("/models", methods=["GET"])
+def list_available_models():
+    return jsonify({
+        "providers": sm.api_factory.list_available_provider_models(),
+    })
+
+
 def _should_preserve_history(preserve):
     if isinstance(preserve, bool):
         return preserve

@@ -384,6 +384,26 @@ curl -X POST http://localhost:11301/ \
 | `/stream` | GET/POST | 发送流式聊天请求，返回 SSE 事件流 |
 | `/help` | GET | 查看帮助信息 |
 | `/inspect` | GET | 查看所有会话的 ID 和消息历史 |
+| `/models` | GET | 查看当前配置中可手动选择的服务商和模型 |
+
+`GET /models` 返回当前进程已加载配置中可手动选择的 provider/model：
+
+```json
+{
+  "providers": [
+    {
+      "id": "zhipu",
+      "models": ["glm-4.7", "glm-4-flash"]
+    },
+    {
+      "id": "doubao",
+      "models": ["ep-a", "ep-b"]
+    }
+  ]
+}
+```
+
+`id` 是请求中的 `provider` 值，`models` 中的字符串是请求中的 `model` 值。普通服务商从 `MODEL` 读取模型，豆包从 `ACCESS_POINT` 读取并同样通过 `model` 参数提交。返回顺序与配置文件一致，模型名称保留配置中的大小写。默认供应商链之外、配置完整且项目支持的服务商也会返回。响应不会包含 API Key、Base URL 等其他配置内容，也不会连接上游服务检查模型或凭据状态；修改配置后需要重启服务才能更新该列表。
 
 `GET /inspect` 返回当前进程内存中的全部会话，例如：
 
@@ -401,7 +421,7 @@ curl -X POST http://localhost:11301/ \
 
 ### 浏览器跨域访问
 
-服务端已对所有路由启用全局 CORS，允许任意来源跨域访问。浏览器前端可以从不同的域名、主机或端口直接调用 `/`、`/stream`、`/help` 和 `/inspect`；使用 `Content-Type: application/json` 的 POST 请求所需的 OPTIONS 预检也已支持。
+服务端已对所有路由启用全局 CORS，允许任意来源跨域访问。浏览器前端可以从不同的域名、主机或端口直接调用 `/`、`/stream`、`/help`、`/inspect` 和 `/models`；使用 `Content-Type: application/json` 的 POST 请求所需的 OPTIONS 预检也已支持。
 
 当前跨域配置不限制来源，也没有启用跨域凭证。curl、PowerShell、Python 及服务端之间的 HTTP 请求不受浏览器 CORS 机制影响。
 

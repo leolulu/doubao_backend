@@ -77,6 +77,13 @@ class FakeSessionManager:
     def __init__(self) -> None:
         self.pool: dict[str, FakeSession] = {}
         self.requests: list[tuple[str | None, str | None, str | None]] = []
+        self.api_factory = self
+
+    def list_available_provider_models(self):
+        return [
+            {"id": "p1", "models": ["model-1", "model-2"]},
+            {"id": "p2", "models": ["Model-A"]},
+        ]
 
     def get_or_create_session(self, id=None, provider=None, model=None):
         self.requests.append((id, provider, model))
@@ -292,6 +299,21 @@ class WebServerTest(unittest.TestCase):
             "id": "s1",
             "messages": [{"role": "user", "content": "stored"}],
         }])
+
+    def test_models_returns_available_provider_models(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.get("/models")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {
+            "providers": [
+                {"id": "p1", "models": ["model-1", "model-2"]},
+                {"id": "p2", "models": ["Model-A"]},
+            ],
+        })
+        self.assertEqual(client.post("/models").status_code, 405)
 
     def test_help_endpoint_lists_provider_and_model_parameters(self) -> None:
         web_server = self.load_server_module()

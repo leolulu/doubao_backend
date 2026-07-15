@@ -371,6 +371,54 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertEqual(client.client.model, "model-b")
         self.assertEqual(client.client.provider_name, "chat_completion:example")
 
+    def test_list_available_provider_models_includes_valid_configured_sections(self) -> None:
+        factory = self.make_factory({"p1": FakeProvider, "doubao": Doubao})
+        factory._config.read_string(
+            "\n".join([
+                "[P1]",
+                "API_KEY = key-1",
+                "MODEL = Model-A, model-b, Model-A",
+                "",
+                "[DOUBAO]",
+                "API_KEY = key-2",
+                "ACCESS_POINT = ep-1,ep-2",
+                "",
+                "[CHAT_COMPLETION:EXAMPLE]",
+                "BASE_URL = https://example.test/v1",
+                "API_KEY = key-3",
+                "MODEL = model-c",
+            ])
+        )
+
+        self.assertEqual(factory.list_available_provider_models(), [
+            {"id": "p1", "models": ["Model-A", "model-b"]},
+            {"id": "doubao", "models": ["ep-1", "ep-2"]},
+            {"id": "chat_completion:example", "models": ["model-c"]},
+        ])
+
+    def test_list_available_provider_models_omits_unavailable_sections(self) -> None:
+        factory = self.make_factory()
+        factory._config.read_string(
+            "\n".join([
+                "[P1]",
+                "API_KEY =",
+                "MODEL = model-a",
+                "",
+                "[P2]",
+                "API_KEY = key-2",
+                "MODEL = model-b,",
+                "",
+                "[UNKNOWN]",
+                "API_KEY = key-3",
+                "MODEL = model-c",
+                "",
+                "[P3]",
+                "API_KEY = key-4",
+            ])
+        )
+
+        self.assertEqual(factory.list_available_provider_models(), [])
+
     def test_default_client_registers_chat_completion_provider_with_model_fallback(self) -> None:
         factory = self.make_factory()
         factory._credentials.update({

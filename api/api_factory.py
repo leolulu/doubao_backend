@@ -523,6 +523,92 @@ class ApiFactory:
     def list_providers(self) -> list[str]:
         return list(self._clients.keys())
 
+    def list_available_provider_models(self) -> list[dict[str, Any]]:
+        config = self._config
+        if config is None:
+            return []
+
+        providers: list[dict[str, Any]] = []
+        seen_providers: set[str] = set()
+        for section_name in config.sections():
+            provider_name = section_name.lower()
+            if provider_name in seen_providers:
+                continue
+            if self._get_provider_section_name(provider_name) != section_name:
+                continue
+            if not self._is_known_provider(provider_name):
+                continue
+
+            models = self._list_available_models_for_provider(
+                config,
+                provider_name,
+                section_name,
+            )
+            if not models:
+                continue
+
+            providers.append({"id": provider_name, "models": models})
+            seen_providers.add(provider_name)
+
+        return providers
+
+    def _list_available_models_for_provider(
+        self,
+        config: configparser.ConfigParser,
+        provider_name: str,
+        section_name: str,
+    ) -> list[str]:
+        try:
+            provider_class = self._get_provider_class(provider_name)
+            target_param_name = self._get_target_param_name(provider_class)
+            if target_param_name is None:
+                return []
+
+            target_config_key = target_param_name.upper()
+            if not config.has_option(section_name, target_config_key):
+                return []
+
+            configured_targets = self._parse_ordered_targets(
+                config.get(section_name, target_config_key),
+                provider_name,
+                target_param_name,
+            )
+
+            provider_config: Dict[str, Any] = {}
+            for config_key, raw_value in config.items(section_name):
+                if config_key.startswith("#"):
+                    continue
+                provider_config[config_key.lower()] = raw_value
+
+            for param in provider_class.get_params():
+                if param.name in provider_config:
+                    provider_config[param.name] = param.parse_value(provider_config[param.name])
+                elif param.default is not None:
+                    provider_config[param.name] = param.default
+
+            if "api_key" in provider_config:
+                self._parse_ordered_targets(
+                    provider_config["api_key"],
+                    provider_name,
+                    "api_key",
+                )
+
+            if self._is_chat_completion_provider(provider_name):
+                provider_config["provider_name"] = provider_name
+
+            models: list[str] = []
+            for target in configured_targets:
+                if target in models:
+                    continue
+                candidate_config = provider_config.copy()
+                candidate_config[target_param_name] = target
+                is_valid, _ = provider_class.validate_config(candidate_config)
+                if is_valid:
+                    models.append(target)
+            return models
+        except (configparser.Error, TypeError, ValueError):
+            return []
+
     def _is_chat_completion_provider(self, provider_name: str) -> bool:
         return (
             provider_name.startswith(self.CHAT_COMPLETION_PREFIX)
