@@ -3,6 +3,7 @@ import json
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 
+from api.api_factory import ManualModelSelectionError
 from models.session_manager import SessionManager
 
 app = Flask(__name__)
@@ -19,6 +20,7 @@ def home():
         "system_message : 系统消息, 不提供则不使用系统消息",
         "preserve : 是否对于相同的会话id保留历史记录",
         "provider : AI服务商名称(可选)，不提供则使用默认服务商",
+        "model : 模型名称(可选)，提供时必须同时提供 provider",
         "user_message : 用户消息(必填)",
     ]
     return "<br>".join(content_lines)
@@ -40,13 +42,38 @@ def _should_preserve_history(preserve):
     return False
 
 
-def _chat_using_parameters(id, system_message, user_message, preserve, provider):
+def _validate_manual_selection_parameters(provider, model):
+    if model is None:
+        return None
+    if provider is None:
+        return "指定 model 时必须同时指定 provider"
+    if not isinstance(provider, str):
+        return "参数 'provider' 必须是字符串"
+    if not isinstance(model, str):
+        return "参数 'model' 必须是字符串"
+    if not provider.strip():
+        return "参数 'provider' 不能为空"
+    if not model.strip():
+        return "参数 'model' 不能为空"
+    if "," in model:
+        return "参数 'model' 只能指定一个模型"
+    return None
+
+
+def _chat_using_parameters(id, system_message, user_message, preserve, provider, model):
     if not user_message:
         return "缺少必填参数: user_message", 400
 
+    validation_error = _validate_manual_selection_parameters(provider, model)
+    if validation_error:
+        return validation_error, 400
+
     preserve = _should_preserve_history(preserve)
 
-    session = sm.get_or_create_session(id, provider=provider)
+    try:
+        session = sm.get_or_create_session(id, provider=provider, model=model)
+    except ManualModelSelectionError as exception:
+        return str(exception), 400
     answer = session.chat(
         user_message,
         preserve=preserve,
@@ -60,12 +87,19 @@ def _encode_sse_event(payload):
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _stream_chat_using_parameters(id, system_message, user_message, preserve, provider):
+def _stream_chat_using_parameters(id, system_message, user_message, preserve, provider, model):
     if not user_message:
         return "缺少必填参数: user_message", 400
 
+    validation_error = _validate_manual_selection_parameters(provider, model)
+    if validation_error:
+        return validation_error, 400
+
     preserve = _should_preserve_history(preserve)
-    session = sm.get_or_create_session(id, provider=provider)
+    try:
+        session = sm.get_or_create_session(id, provider=provider, model=model)
+    except ManualModelSelectionError as exception:
+        return str(exception), 400
     stream = session.chat_stream(
         user_message,
         preserve=preserve,
@@ -117,8 +151,9 @@ def process_chat_request_port():
     user_message = payload.get("user_message")
     preserve = payload.get("preserve")
     provider = payload.get("provider")
+    model = payload.get("model")
 
-    return _chat_using_parameters(id, system_message, user_message, preserve, provider)
+    return _chat_using_parameters(id, system_message, user_message, preserve, provider, model)
 
 
 @app.route("/", methods=["GET"])
@@ -128,8 +163,9 @@ def process_chat_request_get():
     user_message = request.args.get("user_message")
     preserve = request.args.get("preserve")
     provider = request.args.get("provider")
+    model = request.args.get("model")
 
-    return _chat_using_parameters(id, system_message, user_message, preserve, provider)
+    return _chat_using_parameters(id, system_message, user_message, preserve, provider, model)
 
 
 @app.route("/stream", methods=["POST"])
@@ -142,6 +178,7 @@ def process_stream_chat_request_post():
     user_message = payload.get("user_message")
     preserve = payload.get("preserve")
     provider = payload.get("provider")
+    model = payload.get("model")
 
     return _stream_chat_using_parameters(
         id,
@@ -149,6 +186,7 @@ def process_stream_chat_request_post():
         user_message,
         preserve,
         provider,
+        model,
     )
 
 
@@ -159,6 +197,7 @@ def process_stream_chat_request_get():
     user_message = request.args.get("user_message")
     preserve = request.args.get("preserve")
     provider = request.args.get("provider")
+    model = request.args.get("model")
 
     return _stream_chat_using_parameters(
         id,
@@ -166,4 +205,5 @@ def process_stream_chat_request_get():
         user_message,
         preserve,
         provider,
+        model,
     )

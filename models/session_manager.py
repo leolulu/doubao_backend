@@ -103,7 +103,7 @@ class SessionManager:
         self.api_factory = api_factory or ApiFactory()
         self._lock = RLock()
 
-    def new_session(self, id=None, system_message=None, provider=None):
+    def new_session(self, id=None, system_message=None, provider=None, model=None):
         """
         创建新会话
         
@@ -111,6 +111,7 @@ class SessionManager:
             id: 会话 ID，如果不提供则自动生成
             system_message: 系统消息
             provider: AI 服务商名称，如果不提供则使用默认服务商
+            model: 模型名称，仅与 provider 同时提供时使用
         
         Returns:
             Session 实例
@@ -118,25 +119,29 @@ class SessionManager:
         with self._lock:
             if not id:
                 id = str(uuid.uuid4())
-            client = self.api_factory.get_client(provider)
+            if model is None:
+                client = self.api_factory.get_client(provider)
+            else:
+                client = self.api_factory.get_client(provider, model)
             session = Session(id, client, Message(system_message))
             self.pool[id] = session
             return session
 
-    def get_or_create_session(self, id=None, provider=None):
+    def get_or_create_session(self, id=None, provider=None, model=None):
         """
         获取或创建会话
         
         Args:
             id: 会话 ID
             provider: AI 服务商名称，仅在创建新会话时使用
+            model: 模型名称，仅在创建新会话时使用
         
         Returns:
             Session 实例
         """
         with self._lock:
             if id not in self.pool:
-                return self.new_session(id, provider=provider)
+                return self.new_session(id, provider=provider, model=model)
             return self.pool[id]
 
     def list_sessions(self):

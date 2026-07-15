@@ -60,11 +60,14 @@ class FakeApiFactory:
             None: RecordingClient("default"),
             "p1": RecordingClient("from-p1"),
             "p2": RecordingClient("from-p2"),
+            ("p1", "model-1"): RecordingClient("from-p1-model-1"),
         }
-        self.requested_providers: list[str | None] = []
+        self.requested_clients: list[tuple[str | None, str | None]] = []
 
-    def get_client(self, provider=None):
-        self.requested_providers.append(provider)
+    def get_client(self, provider=None, model=None):
+        self.requested_clients.append((provider, model))
+        if model is not None:
+            return self.clients[(provider, model)]
         return self.clients[provider]
 
 
@@ -183,9 +186,18 @@ class SessionManagerTest(unittest.TestCase):
         session = manager.new_session("s1", system_message="system", provider="p1")
 
         self.assertIs(manager.pool["s1"], session)
-        self.assertEqual(api_factory.requested_providers, ["p1"])
+        self.assertEqual(api_factory.requested_clients, [("p1", None)])
         self.assertEqual(session.client, api_factory.clients["p1"])
         self.assertEqual(session.messages.messages, [{"role": "system", "content": "system"}])
+
+    def test_new_session_uses_requested_provider_and_model(self) -> None:
+        api_factory = FakeApiFactory()
+        manager = SessionManager(api_factory=api_factory)
+
+        session = manager.new_session("s1", provider="p1", model="model-1")
+
+        self.assertEqual(api_factory.requested_clients, [("p1", "model-1")])
+        self.assertEqual(session.client, api_factory.clients[("p1", "model-1")])
 
     def test_get_or_create_session_reuses_existing_session_and_ignores_later_provider(self) -> None:
         api_factory = FakeApiFactory()
@@ -195,7 +207,17 @@ class SessionManagerTest(unittest.TestCase):
         second = manager.get_or_create_session("s1", provider="p2")
 
         self.assertIs(first, second)
-        self.assertEqual(api_factory.requested_providers, ["p1"])
+        self.assertEqual(api_factory.requested_clients, [("p1", None)])
+
+    def test_get_or_create_session_ignores_later_provider_and_model(self) -> None:
+        api_factory = FakeApiFactory()
+        manager = SessionManager(api_factory=api_factory)
+
+        first = manager.get_or_create_session("s1", provider="p1", model="model-1")
+        second = manager.get_or_create_session("s1", provider="p2", model="model-2")
+
+        self.assertIs(first, second)
+        self.assertEqual(api_factory.requested_clients, [("p1", "model-1")])
 
 
 if __name__ == "__main__":

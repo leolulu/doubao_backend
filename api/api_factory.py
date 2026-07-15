@@ -15,6 +15,10 @@ from api.retrying_api import FailureHandler, FeishuNotifier, RetryingApi
 from api.zhipu import Zhipu
 
 
+class ManualModelSelectionError(ValueError):
+    """The requested provider/model pair is not available in configuration."""
+
+
 class ApiFactory:
     """Factory for configured AI provider clients."""
 
@@ -30,6 +34,7 @@ class ApiFactory:
             "designated_provider": "doubao",
             "designated_providers": ["doubao"],
         }
+        self._config: configparser.ConfigParser | None = None
         self._failure_handlers: list[FailureHandler] = [FeishuNotifier(self.FEISHU_WEBHOOK_URL).notify_failure]
         self._provider_classes: Dict[str, Type[BaseApi]] = {}
         self._register_provider_classes()
@@ -76,6 +81,7 @@ class ApiFactory:
         try:
             config = configparser.ConfigParser()
             config.read(credential_file, encoding="utf-8")
+            self._config = config
 
             raw_provider = "doubao"
             if config.has_section("designated_provider"):
@@ -383,7 +389,14 @@ class ApiFactory:
     def register_provider_class(self, name: str, client_class: Type[BaseApi], **kwargs):
         self._register_provider(name, client_class, **kwargs)
 
-    def get_client(self, provider: Optional[str] = None) -> BaseApi:
+    def get_client(
+        self,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> BaseApi:
+        if model is not None:
+            return self._build_manual_client(provider, model)
+
         if provider is None:
             if self._default_client is None:
                 raise ValueError("默认服务商客户端尚未初始化")
@@ -397,6 +410,98 @@ class ApiFactory:
             )
 
         return self._clients[provider]
+
+    def _build_manual_client(
+        self,
+        provider: Optional[str],
+        model: str,
+    ) -> BaseApi:
+        if provider is None:
+            raise ManualModelSelectionError("指定 model 时必须同时指定 provider")
+        if not isinstance(provider, str):
+            raise ManualModelSelectionError("参数 'provider' 必须是字符串")
+        if not isinstance(model, str):
+            raise ManualModelSelectionError("参数 'model' 必须是字符串")
+
+        provider_name = provider.strip().lower()
+        model_name = model.strip()
+        if not provider_name:
+            raise ManualModelSelectionError("参数 'provider' 不能为空")
+        if not model_name:
+            raise ManualModelSelectionError("参数 'model' 不能为空")
+        if "," in model_name:
+            raise ManualModelSelectionError("参数 'model' 只能指定一个模型")
+
+        config = self._config
+        if config is None:
+            raise ManualModelSelectionError("服务商配置尚未加载")
+
+        try:
+            provider_class = self._get_provider_class(provider_name)
+        except ValueError as exception:
+            raise ManualModelSelectionError(str(exception)) from exception
+
+        section_name = self._get_provider_section_name(provider_name)
+        if not config.has_section(section_name):
+            raise ManualModelSelectionError(
+                f"配置文件中未找到服务商 [{section_name}] 的配置段"
+            )
+
+        target_param_name = self._get_target_param_name(provider_class)
+        if target_param_name is None:
+            raise ManualModelSelectionError(
+                f"服务商 '{provider_name}' 不支持通过 model 选择模型"
+            )
+
+        target_config_key = target_param_name.upper()
+        if not config.has_option(section_name, target_config_key):
+            raise ManualModelSelectionError(
+                f"服务商 [{section_name}] 未配置 {target_config_key}"
+            )
+
+        raw_targets = config.get(section_name, target_config_key)
+        try:
+            configured_targets = self._parse_ordered_targets(
+                raw_targets,
+                provider_name,
+                target_param_name,
+            )
+        except ValueError as exception:
+            raise ManualModelSelectionError(str(exception)) from exception
+
+        if model_name not in configured_targets:
+            raise ManualModelSelectionError(
+                f"模型 '{model_name}' 未配置在服务商 '{provider_name}' 中"
+            )
+
+        provider_config: Dict[str, Any] = {}
+        for config_key, raw_value in config.items(section_name):
+            if config_key.startswith("#"):
+                continue
+            provider_config[config_key.lower()] = raw_value
+
+        for param in provider_class.get_params():
+            if param.name in provider_config:
+                provider_config[param.name] = param.parse_value(provider_config[param.name])
+            elif param.default is not None:
+                provider_config[param.name] = param.default
+
+        if self._is_chat_completion_provider(provider_name):
+            provider_config["provider_name"] = provider_name
+
+        provider_config[target_param_name] = model_name
+        is_valid, errors = provider_class.validate_config(provider_config)
+        if not is_valid:
+            error_msg = f"服务商 [{section_name}] 配置错误:\n" + "\n".join(
+                f"  - {error}" for error in errors
+            )
+            raise ManualModelSelectionError(error_msg)
+
+        return self._build_provider_client(
+            provider_name,
+            provider_class,
+            provider_config,
+        )
 
     def set_designated_provider(self, provider: str):
         providers = self._parse_designated_providers(provider)

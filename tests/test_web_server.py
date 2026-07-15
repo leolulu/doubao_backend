@@ -15,9 +15,15 @@ class FakeMessageStore:
 
 
 class FakeSession:
-    def __init__(self, session_id: str | None, provider: str | None) -> None:
+    def __init__(
+        self,
+        session_id: str | None,
+        provider: str | None,
+        model: str | None,
+    ) -> None:
         self.id = session_id
         self.provider = provider
+        self.model = model
         self.messages = FakeMessageStore()
         self.adjusted_system_messages: list[str] = []
         self.chat_once_calls: list[str] = []
@@ -70,13 +76,13 @@ class FakeSession:
 class FakeSessionManager:
     def __init__(self) -> None:
         self.pool: dict[str, FakeSession] = {}
-        self.requests: list[tuple[str | None, str | None]] = []
+        self.requests: list[tuple[str | None, str | None, str | None]] = []
 
-    def get_or_create_session(self, id=None, provider=None):
-        self.requests.append((id, provider))
+    def get_or_create_session(self, id=None, provider=None, model=None):
+        self.requests.append((id, provider, model))
         session_id = id or "generated"
         if session_id not in self.pool:
-            self.pool[session_id] = FakeSession(session_id, provider)
+            self.pool[session_id] = FakeSession(session_id, provider, model)
         return self.pool[session_id]
 
     def list_sessions(self):
@@ -112,11 +118,31 @@ class WebServerTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_data(as_text=True), "preserve:hello:p1")
-        self.assertEqual(web_server.sm.requests, [("s1", "p1")])
+        self.assertEqual(web_server.sm.requests, [("s1", "p1", None)])
         session = web_server.sm.pool["s1"]
         self.assertEqual(session.adjusted_system_messages, ["system"])
         self.assertEqual(session.chat_preserving_history_calls, ["hello"])
         self.assertEqual(session.chat_once_calls, [])
+
+    def test_post_chat_passes_provider_and_model(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.post("/", json={
+            "id": "manual",
+            "user_message": "hello",
+            "provider": "p1",
+            "model": "model-1",
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            web_server.sm.requests,
+            [("manual", "p1", "model-1")],
+        )
+        session = web_server.sm.pool["manual"]
+        self.assertEqual(session.provider, "p1")
+        self.assertEqual(session.model, "model-1")
 
     def test_post_chat_boolean_false_uses_chat_once(self) -> None:
         web_server = self.load_server_module()
@@ -157,6 +183,24 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual(session.chat_once_calls, ["hello"])
         self.assertEqual(session.chat_preserving_history_calls, [])
 
+    def test_get_chat_and_stream_pass_provider_and_model(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        chat_response = client.get(
+            "/?id=manual-get&user_message=hello&provider=p1&model=model-1"
+        )
+        stream_response = client.get(
+            "/stream?id=manual-stream&user_message=hello&provider=p1&model=model-1"
+        )
+
+        self.assertEqual(chat_response.status_code, 200)
+        self.assertEqual(stream_response.status_code, 200)
+        self.assertEqual(web_server.sm.requests, [
+            ("manual-get", "p1", "model-1"),
+            ("manual-stream", "p1", "model-1"),
+        ])
+
     def test_missing_user_message_returns_400(self) -> None:
         web_server = self.load_server_module()
         client = web_server.app.test_client()
@@ -178,6 +222,45 @@ class WebServerTest(unittest.TestCase):
                 self.assertIn("user_message", response.get_data(as_text=True))
 
         self.assertEqual(web_server.sm.requests, [])
+
+    def test_manual_model_parameter_validation_returns_400(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        invalid_payloads = [
+            {"user_message": "hello", "model": "model-1"},
+            {"user_message": "hello", "provider": "p1", "model": ""},
+            {"user_message": "hello", "provider": "p1", "model": "model-1,model-2"},
+            {"user_message": "hello", "provider": "p1", "model": 1},
+        ]
+        for path in ["/", "/stream"]:
+            for payload in invalid_payloads:
+                with self.subTest(path=path, payload=payload):
+                    response = client.post(path, json=payload)
+                    self.assertEqual(response.status_code, 400)
+
+        response = client.get("/?user_message=hello&model=model-1")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(web_server.sm.requests, [])
+
+    def test_manual_selection_error_returns_400_before_chat(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        def fail_selection(id=None, provider=None, model=None):
+            raise web_server.ManualModelSelectionError("model unavailable")
+
+        web_server.sm.get_or_create_session = fail_selection
+
+        for path in ["/", "/stream"]:
+            with self.subTest(path=path):
+                response = client.post(path, json={
+                    "user_message": "hello",
+                    "provider": "p1",
+                    "model": "model-1",
+                })
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_data(as_text=True), "model unavailable")
 
     def test_post_requires_json_object(self) -> None:
         web_server = self.load_server_module()
@@ -210,14 +293,16 @@ class WebServerTest(unittest.TestCase):
             "messages": [{"role": "user", "content": "stored"}],
         }])
 
-    def test_help_endpoint_lists_provider_parameter(self) -> None:
+    def test_help_endpoint_lists_provider_and_model_parameters(self) -> None:
         web_server = self.load_server_module()
         client = web_server.app.test_client()
 
         response = client.get("/help")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("provider", response.get_data(as_text=True))
+        content = response.get_data(as_text=True)
+        self.assertIn("provider", content)
+        self.assertIn("model", content)
 
     def test_get_response_allows_cross_origin_access(self) -> None:
         web_server = self.load_server_module()
@@ -264,6 +349,7 @@ class WebServerTest(unittest.TestCase):
             "user_message": "hello",
             "preserve": True,
             "provider": "p1",
+            "model": "model-1",
         })
 
         self.assertEqual(response.status_code, 200)
@@ -277,6 +363,7 @@ class WebServerTest(unittest.TestCase):
             {"type": "done", "preserved": True},
         ])
         session = web_server.sm.pool["s-stream"]
+        self.assertEqual(web_server.sm.requests, [("s-stream", "p1", "model-1")])
         self.assertEqual(session.chat_stream_calls, [("hello", True, "system")])
 
     def test_get_stream_returns_generated_session_id(self) -> None:

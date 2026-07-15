@@ -1,3 +1,4 @@
+import configparser
 import os
 import tempfile
 import typing
@@ -6,9 +7,10 @@ import unittest
 if not hasattr(typing, "override"):
     typing.override = lambda func: func
 
-from api.api_factory import ApiFactory
+from api.api_factory import ApiFactory, ManualModelSelectionError
 from api.base_api import BaseApi
 from api.chat_completion import ChatCompletion
+from api.doubao import Doubao
 from api.fallback_api import FallbackApi
 from api.kimi import Kimi
 from api.param_schema import ParamType, ProviderParam
@@ -65,6 +67,7 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
             "designated_provider": "p1",
             "designated_providers": ["p1"],
         }
+        factory._config = configparser.ConfigParser()
         factory._failure_handlers = []
         factory._provider_classes = provider_classes or {
             "p1": FakeProvider,
@@ -257,6 +260,116 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertIsInstance(factory.get_client("p1"), FallbackApi)
         self.assertIsInstance(factory.get_client("p2"), RetryingApi)
         self.assertEqual(factory.list_providers(), ["p1", "p2"])
+
+    def test_manual_model_selection_uses_only_requested_model_and_keeps_api_key_fallback(self) -> None:
+        factory = self.make_factory()
+        factory._config.read_string(
+            "\n".join([
+                "[P3]",
+                "API_KEY = key-1,key-2",
+                "MODEL = model-1,model-2",
+            ])
+        )
+
+        client = factory.get_client("P3", "model-2")
+
+        self.assertIsInstance(client, FallbackApi)
+        self.assertEqual(
+            [entry.target for entry in client.entries],
+            ["api_key#1:model-2", "api_key#2:model-2"],
+        )
+        concrete_clients = [entry.client.client for entry in client.entries]
+        self.assertEqual(
+            [(item.api_key, item.model) for item in concrete_clients],
+            [("key-1", "model-2"), ("key-2", "model-2")],
+        )
+        self.assertNotIn("p3", factory._clients)
+
+    def test_manual_model_selection_does_not_replace_automatic_clients(self) -> None:
+        factory = self.make_factory()
+        factory._credentials["p1"] = {
+            "api_key": "key-1",
+            "model": "model-1,model-2",
+        }
+        factory._config.read_string(
+            "\n".join([
+                "[P1]",
+                "API_KEY = key-1",
+                "MODEL = model-1,model-2",
+            ])
+        )
+        factory._set_designated_providers(["p1"])
+        factory._register_designated_provider()
+        automatic_default = factory.get_client()
+        automatic_provider = factory.get_client("p1")
+
+        manual = factory.get_client("p1", "model-2")
+
+        self.assertIs(factory.get_client(), automatic_default)
+        self.assertIs(factory.get_client("p1"), automatic_provider)
+        self.assertIsNot(manual, automatic_provider)
+        self.assertEqual(
+            [entry.target for entry in automatic_provider.entries],
+            ["model-1", "model-2"],
+        )
+        self.assertIsInstance(manual, RetryingApi)
+        self.assertEqual(manual.client.model, "model-2")
+
+    def test_manual_model_selection_rejects_invalid_parameter_combinations(self) -> None:
+        factory = self.make_factory()
+        factory._config.read_string(
+            "\n".join([
+                "[P1]",
+                "API_KEY = key-1",
+                "MODEL = Model-A",
+            ])
+        )
+
+        invalid_selections = [
+            (None, "Model-A"),
+            ("p1", ""),
+            ("p1", "Model-A,Model-B"),
+            ("p1", "model-a"),
+            ("p2", "Model-A"),
+        ]
+        for provider, model in invalid_selections:
+            with self.subTest(provider=provider, model=model):
+                with self.assertRaises(ManualModelSelectionError):
+                    factory.get_client(provider, model)
+
+    def test_manual_doubao_model_matches_configured_access_point(self) -> None:
+        factory = self.make_factory({"doubao": Doubao})
+        factory._config.read_string(
+            "\n".join([
+                "[DOUBAO]",
+                "API_KEY = key-1",
+                "ACCESS_POINT = ep-1,ep-2",
+            ])
+        )
+
+        client = factory.get_client("doubao", "ep-2")
+
+        self.assertIsInstance(client, RetryingApi)
+        self.assertIsInstance(client.client, Doubao)
+        self.assertEqual(client.client.access_point, "ep-2")
+
+    def test_manual_chat_completion_alias_uses_its_own_config_section(self) -> None:
+        factory = self.make_factory()
+        factory._config.read_string(
+            "\n".join([
+                "[CHAT_COMPLETION:EXAMPLE]",
+                "BASE_URL = https://example.test/v1",
+                "API_KEY = key-1",
+                "MODEL = model-a,model-b",
+            ])
+        )
+
+        client = factory.get_client("chat_completion:example", "model-b")
+
+        self.assertIsInstance(client, RetryingApi)
+        self.assertIsInstance(client.client, ChatCompletion)
+        self.assertEqual(client.client.model, "model-b")
+        self.assertEqual(client.client.provider_name, "chat_completion:example")
 
     def test_default_client_registers_chat_completion_provider_with_model_fallback(self) -> None:
         factory = self.make_factory()
