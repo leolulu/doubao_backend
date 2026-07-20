@@ -177,7 +177,7 @@ class ApiFactory:
                     )
                     return False
 
-                previous_summary = self._build_runtime_summary()
+                previous_summary = self._safe_runtime_summary()
                 config, credentials, providers = self._parse_credentials_file(
                     credential_file,
                     allow_create_missing=False,
@@ -217,21 +217,34 @@ class ApiFactory:
                 self._default_client = new_default_client
                 self._last_config_hash = new_hash
 
-                new_summary = self._build_runtime_summary()
-                available_models = self.list_available_provider_models()
-                logger.info(
-                    "credentials reload succeeded: sha256=%s previous=%s current=%s available_models=%s",
-                    new_hash,
-                    previous_summary,
-                    new_summary,
-                    available_models,
-                )
+                # Runtime state is already committed. Logging must never undo
+                # success or bubble into the watcher thread.
+                try:
+                    new_summary = self._build_runtime_summary()
+                    available_models = self.list_available_provider_models()
+                    logger.info(
+                        "credentials reload succeeded: sha256=%s previous=%s current=%s available_models=%s",
+                        new_hash,
+                        previous_summary,
+                        new_summary,
+                        available_models,
+                    )
+                except Exception:
+                    logger.exception(
+                        "credentials reload applied, but success logging failed: "
+                        "path=%s sha256=%s designated_providers=%s registered_clients=%s",
+                        credential_file,
+                        new_hash,
+                        list(providers),
+                        list(new_clients.keys()),
+                    )
                 return True
             except Exception:
+                failure_summary = self._safe_runtime_summary()
                 logger.exception(
                     "credentials reload failed; keeping previous runtime configuration: path=%s previous=%s",
                     credential_file,
-                    self._build_runtime_summary(),
+                    failure_summary,
                 )
                 return False
 
@@ -246,28 +259,72 @@ class ApiFactory:
         except OSError:
             return None
 
+    def _safe_runtime_summary(self) -> dict[str, Any] | str:
+        try:
+            return self._build_runtime_summary()
+        except Exception as summary_error:
+            return f"<summary unavailable: {type(summary_error).__name__}: {summary_error}>"
+
     def _build_runtime_summary(self) -> dict[str, Any]:
+        """Build a redacted config snapshot for logs. Prefer never raising."""
         config = self._config
         sections: list[dict[str, Any]] = []
         if config is not None:
-            for section_name in config.sections():
+            try:
+                section_names = list(config.sections())
+            except Exception as sections_error:
+                sections.append({
+                    "section": "<sections unreadable>",
+                    "error": f"{type(sections_error).__name__}: {sections_error}",
+                })
+                section_names = []
+
+            for section_name in section_names:
                 if section_name == "designated_provider":
                     continue
                 section_info: dict[str, Any] = {"section": section_name}
-                for key, value in config.items(section_name):
+                try:
+                    items = list(config.items(section_name))
+                except Exception as section_error:
+                    section_info["error"] = (
+                        f"{type(section_error).__name__}: {section_error}"
+                    )
+                    sections.append(section_info)
+                    continue
+
+                for key, value in items:
                     if key.startswith("#"):
                         continue
-                    normalized_key = key.lower()
-                    if normalized_key in _SENSITIVE_CONFIG_KEYS:
-                        parts = [part.strip() for part in str(value).split(",") if part.strip()]
-                        section_info[key.upper()] = f"<{len(parts)} value(s) redacted>"
-                    else:
-                        section_info[key.upper()] = value
+                    try:
+                        normalized_key = key.lower()
+                        if normalized_key in _SENSITIVE_CONFIG_KEYS:
+                            parts = [
+                                part.strip()
+                                for part in str(value).split(",")
+                                if part.strip()
+                            ]
+                            section_info[key.upper()] = f"<{len(parts)} value(s) redacted>"
+                        else:
+                            section_info[key.upper()] = value
+                    except Exception as item_error:
+                        section_info[str(key)] = (
+                            f"<unreadable: {type(item_error).__name__}: {item_error}>"
+                        )
                 sections.append(section_info)
 
+        try:
+            designated_providers = list(self._designated_providers)
+        except Exception:
+            designated_providers = ["<unavailable>"]
+
+        try:
+            registered_clients = list(self._clients.keys())
+        except Exception:
+            registered_clients = ["<unavailable>"]
+
         return {
-            "designated_providers": list(self._designated_providers),
-            "registered_clients": list(self._clients.keys()),
+            "designated_providers": designated_providers,
+            "registered_clients": registered_clients,
             "sections": sections,
             "config_hash": self._last_config_hash,
         }

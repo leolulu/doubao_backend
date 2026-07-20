@@ -696,6 +696,75 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertNotIn("secret-a", str(summary))
         self.assertNotIn("secret-b", str(summary))
 
+    def test_reload_success_logging_failure_still_returns_true_and_keeps_new_config(self) -> None:
+        factory = self.make_factory()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p1",
+                        "",
+                        "[P1]",
+                        "API_KEY = key-1",
+                        "MODEL = model-1",
+                    ])
+                )
+                factory._load_config()
+                factory._register_designated_provider()
+                factory._last_config_hash = factory._hash_file("credentials.config")
+
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p2",
+                        "",
+                        "[P2]",
+                        "API_KEY = key-2",
+                        "MODEL = model-2",
+                        "",
+                        # Non-default section with interpolation that breaks items()
+                        "[EXTRA]",
+                        "NOTE = broken %(missing)s value",
+                    ])
+                )
+
+                reloaded = factory.reload_credentials()
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertTrue(reloaded)
+        self.assertEqual(factory.get_designated_providers(), ["p2"])
+        self.assertEqual(factory.list_providers(), ["p2"])
+        self.assertEqual(
+            factory.list_available_provider_models(),
+            [{"id": "p2", "models": ["model-2"]}],
+        )
+
+    def test_runtime_summary_survives_broken_interpolation_sections(self) -> None:
+        factory = self.make_factory()
+        config = configparser.ConfigParser()
+        config.read_dict({
+            "designated_provider": {"PROVIDER": "p1"},
+            "P1": {"API_KEY": "secret", "MODEL": "model-1"},
+            "EXTRA": {"NOTE": "broken %(missing)s value"},
+        })
+        factory._config = config
+        factory._set_designated_providers(["p1"])
+        factory._clients = {"p1": FakeProvider("secret", "model-1")}
+
+        summary = factory._build_runtime_summary()
+        safe_summary = factory._safe_runtime_summary()
+
+        self.assertEqual(summary["designated_providers"], ["p1"])
+        extra = next(item for item in summary["sections"] if item["section"] == "EXTRA")
+        self.assertIn("error", extra)
+        self.assertIsInstance(safe_summary, dict)
+        self.assertNotIn("secret", str(summary))
+
 
 class CredentialsWatcherTest(unittest.TestCase):
     def test_start_credentials_watcher_calls_reload_on_matching_file_event(self) -> None:
@@ -735,6 +804,53 @@ class CredentialsWatcherTest(unittest.TestCase):
             finally:
                 os.chdir(previous_cwd)
 
+        self.assertFalse(thread.is_alive())
+
+    def test_watcher_continues_after_reload_raises(self) -> None:
+        from api.credentials_watcher import start_credentials_watcher
+        from watchfiles import Change
+
+        call_count = 0
+        second_call = threading.Event()
+
+        class FakeFactory:
+            def reload_credentials(self) -> bool:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise RuntimeError("boom")
+                second_call.set()
+                return True
+
+        stop_event = threading.Event()
+
+        def fake_watch(*_args, **_kwargs):
+            target = str(Path.cwd() / "credentials.config")
+            yield {(Change.modified, target)}
+            yield {(Change.modified, target)}
+            stop_event.set()
+            return
+            yield
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with open("credentials.config", "w", encoding="utf-8") as config_file:
+                    config_file.write("[designated_provider]\nPROVIDER = p1\n")
+                with patch("api.credentials_watcher.watch", side_effect=fake_watch):
+                    thread = start_credentials_watcher(
+                        FakeFactory(),
+                        credentials_path="credentials.config",
+                        stop_event=stop_event,
+                    )
+                    self.assertTrue(second_call.wait(timeout=2))
+                    stop_event.set()
+                    thread.join(timeout=2)
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertEqual(call_count, 2)
         self.assertFalse(thread.is_alive())
 
 

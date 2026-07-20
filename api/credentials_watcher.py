@@ -82,7 +82,14 @@ def start_credentials_watcher(
                     change_summary,
                     resolved,
                 )
-                factory.reload_credentials()
+                # Isolate each reload so a single failure never kills watching.
+                try:
+                    factory.reload_credentials()
+                except Exception:
+                    logger.exception(
+                        "credentials reload raised unexpectedly; watcher continues: path=%s",
+                        resolved,
+                    )
         except Exception:
             logger.exception("credentials watcher stopped unexpectedly")
         finally:
