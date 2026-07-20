@@ -1,5 +1,8 @@
 import configparser
+import hashlib
+import logging
 import os
+import threading
 from typing import Any, Dict, Optional, Type
 
 from api.base_api import BaseApi
@@ -13,6 +16,12 @@ from api.modelscope import ModelScope
 from api.provider_fallback_api import ProviderFallbackApi, ProviderFallbackEntry
 from api.retrying_api import FailureHandler, FeishuNotifier, RetryingApi
 from api.zhipu import Zhipu
+
+logger = logging.getLogger(__name__)
+
+# Project-root relative path; hot reload watches this fixed filename only.
+CREDENTIALS_FILENAME = "credentials.config"
+_SENSITIVE_CONFIG_KEYS = frozenset({"api_key"})
 
 
 class ManualModelSelectionError(ValueError):
@@ -37,9 +46,13 @@ class ApiFactory:
         self._config: configparser.ConfigParser | None = None
         self._failure_handlers: list[FailureHandler] = [FeishuNotifier(self.FEISHU_WEBHOOK_URL).notify_failure]
         self._provider_classes: Dict[str, Type[BaseApi]] = {}
+        self._credentials_path = CREDENTIALS_FILENAME
+        self._reload_lock = threading.RLock()
+        self._last_config_hash: str | None = None
         self._register_provider_classes()
         self._load_config()
         self._register_designated_provider()
+        self._last_config_hash = self._hash_file(self._credentials_path)
 
     def _register_provider_classes(self):
         self._provider_classes["doubao"] = Doubao
@@ -72,33 +85,192 @@ class ApiFactory:
             f.write("\n".join(lines))
 
     def _load_config(self):
-        credential_file = "credentials.config"
+        credential_file = self._credentials_path
 
         if not os.path.exists(credential_file):
             self._create_minimal_config(credential_file)
             raise UserWarning(f"已在当前目录生成 {credential_file} 文件，请填入凭据信息!")
 
         try:
-            config = configparser.ConfigParser()
-            config.read(credential_file, encoding="utf-8")
+            config, credentials, providers = self._parse_credentials_file(
+                credential_file,
+                allow_create_missing=True,
+            )
             self._config = config
-
-            raw_provider = "doubao"
-            if config.has_section("designated_provider"):
-                raw_provider = config.get("designated_provider", "PROVIDER", fallback="doubao")
-
-            providers = self._parse_designated_providers(raw_provider)
+            self._credentials = credentials
             self._set_designated_providers(providers)
-
-            for provider_name in providers:
-                self._load_provider_config(config, provider_name, credential_file)
-
         except UserWarning:
             raise
         except ValueError:
             raise
         except Exception as e:
             raise ValueError(f"配置文件读取失败: {str(e)}")
+
+    def _parse_credentials_file(
+        self,
+        credential_file: str,
+        *,
+        allow_create_missing: bool,
+    ) -> tuple[configparser.ConfigParser, Dict[str, Any], list[str]]:
+        """Parse and validate credentials without mutating live client objects."""
+        if not os.path.exists(credential_file):
+            raise ValueError(f"配置文件不存在: {credential_file}")
+
+        config = configparser.ConfigParser()
+        read_files = config.read(credential_file, encoding="utf-8")
+        if not read_files:
+            raise ValueError(f"配置文件读取失败或为空: {credential_file}")
+
+        raw_provider = "doubao"
+        if config.has_section("designated_provider"):
+            raw_provider = config.get("designated_provider", "PROVIDER", fallback="doubao")
+
+        providers = self._parse_designated_providers(raw_provider)
+        credentials: Dict[str, Any] = {
+            "designated_provider": ",".join(providers),
+            "designated_providers": list(providers),
+        }
+
+        for provider_name in providers:
+            provider_config = self._load_provider_config(
+                config,
+                provider_name,
+                credential_file,
+                allow_create_missing=allow_create_missing,
+            )
+            credentials[provider_name] = provider_config
+
+        return config, credentials, providers
+
+    def reload_credentials(self) -> bool:
+        """
+        Hot-reload credentials.config into this factory.
+
+        On success, updates default provider chain, registered provider clients,
+        and the config snapshot used by /models and manual selection.
+        Existing Session objects keep their already-bound clients.
+
+        Returns:
+            True if runtime config state was replaced; False if skipped or failed.
+        """
+        with self._reload_lock:
+            credential_file = self._credentials_path
+            logger.info(
+                "credentials reload requested: path=%s previous_hash=%s",
+                credential_file,
+                self._last_config_hash,
+            )
+
+            try:
+                if not os.path.exists(credential_file):
+                    raise ValueError(f"配置文件不存在: {credential_file}")
+
+                new_hash = self._hash_file(credential_file)
+                if (
+                    self._last_config_hash is not None
+                    and new_hash is not None
+                    and new_hash == self._last_config_hash
+                ):
+                    logger.info(
+                        "credentials reload skipped: content unchanged (sha256=%s)",
+                        new_hash,
+                    )
+                    return False
+
+                previous_summary = self._build_runtime_summary()
+                config, credentials, providers = self._parse_credentials_file(
+                    credential_file,
+                    allow_create_missing=False,
+                )
+
+                new_clients: Dict[str, BaseApi] = {}
+                for provider_name in providers:
+                    new_clients[provider_name] = self._build_configured_provider_client(
+                        provider_name,
+                        self._get_provider_class(provider_name),
+                        credentials=credentials,
+                    )
+
+                if len(providers) == 1:
+                    new_default_client = new_clients[providers[0]]
+                else:
+                    entries: list[ProviderFallbackEntry] = []
+                    for provider_name in providers:
+                        client = self._build_configured_provider_client(
+                            provider_name,
+                            self._get_provider_class(provider_name),
+                            failure_handlers=[],
+                            credentials=credentials,
+                        )
+                        entries.append(
+                            ProviderFallbackEntry(provider_name=provider_name, client=client)
+                        )
+                    new_default_client = ProviderFallbackApi(
+                        entries,
+                        failure_handlers=self._failure_handlers,
+                    )
+
+                self._config = config
+                self._credentials = credentials
+                self._set_designated_providers(providers)
+                self._clients = new_clients
+                self._default_client = new_default_client
+                self._last_config_hash = new_hash
+
+                new_summary = self._build_runtime_summary()
+                available_models = self.list_available_provider_models()
+                logger.info(
+                    "credentials reload succeeded: sha256=%s previous=%s current=%s available_models=%s",
+                    new_hash,
+                    previous_summary,
+                    new_summary,
+                    available_models,
+                )
+                return True
+            except Exception:
+                logger.exception(
+                    "credentials reload failed; keeping previous runtime configuration: path=%s previous=%s",
+                    credential_file,
+                    self._build_runtime_summary(),
+                )
+                return False
+
+    @staticmethod
+    def _hash_file(path: str) -> str | None:
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as file_obj:
+                for chunk in iter(lambda: file_obj.read(65536), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except OSError:
+            return None
+
+    def _build_runtime_summary(self) -> dict[str, Any]:
+        config = self._config
+        sections: list[dict[str, Any]] = []
+        if config is not None:
+            for section_name in config.sections():
+                if section_name == "designated_provider":
+                    continue
+                section_info: dict[str, Any] = {"section": section_name}
+                for key, value in config.items(section_name):
+                    if key.startswith("#"):
+                        continue
+                    normalized_key = key.lower()
+                    if normalized_key in _SENSITIVE_CONFIG_KEYS:
+                        parts = [part.strip() for part in str(value).split(",") if part.strip()]
+                        section_info[key.upper()] = f"<{len(parts)} value(s) redacted>"
+                    else:
+                        section_info[key.upper()] = value
+                sections.append(section_info)
+
+        return {
+            "designated_providers": list(self._designated_providers),
+            "registered_clients": list(self._clients.keys()),
+            "sections": sections,
+            "config_hash": self._last_config_hash,
+        }
 
     def _parse_designated_providers(self, value: Any) -> list[str]:
         raw_value = str(value)
@@ -143,15 +315,18 @@ class ApiFactory:
         config: configparser.ConfigParser,
         provider_name: str,
         credential_file: str,
-    ) -> None:
+        *,
+        allow_create_missing: bool = True,
+    ) -> Dict[str, Any]:
         section_name = self._get_provider_section_name(provider_name)
         provider_class = self._get_provider_class(provider_name)
 
         if not config.has_section(section_name):
-            self._ensure_provider_config(provider_name, credential_file)
+            if allow_create_missing:
+                self._ensure_provider_config(provider_name, credential_file)
             raise ValueError(f"配置文件中未找到服务商 [{section_name}] 的配置段")
 
-        provider_config = {}
+        provider_config: Dict[str, Any] = {}
         for config_key, raw_value in config.items(section_name):
             if config_key.startswith("#"):
                 continue
@@ -171,7 +346,7 @@ class ApiFactory:
             error_msg = f"服务商 [{section_name}] 配置错误:\n" + "\n".join(f"  - {e}" for e in errors)
             raise ValueError(error_msg)
 
-        self._credentials[provider_name] = provider_config
+        return provider_config
 
     def _ensure_provider_config(self, provider_name: str, credential_file: str):
         if os.path.exists(credential_file):
@@ -276,14 +451,19 @@ class ApiFactory:
         client_class: Type[BaseApi],
         extra_kwargs: Dict[str, Any] | None = None,
         failure_handlers: list[FailureHandler] | None = None,
+        credentials: Dict[str, Any] | None = None,
     ) -> BaseApi:
-        credential_file = "credentials.config"
+        credential_file = self._credentials_path
+        credentials_map = self._credentials if credentials is None else credentials
 
-        if name.lower() not in self._credentials:
+        if name.lower() not in credentials_map:
+            if credentials is not None:
+                raise ValueError(f"服务商 '{name}' 的凭据未加载")
             self._ensure_provider_config(name, credential_file)
             self._load_config()
+            credentials_map = self._credentials
 
-        creds = self._credentials.get(name.lower(), {})
+        creds = credentials_map.get(name.lower(), {})
         client_kwargs = creds.copy()
         if extra_kwargs:
             client_kwargs.update(extra_kwargs)
@@ -394,22 +574,23 @@ class ApiFactory:
         provider: Optional[str] = None,
         model: Optional[str] = None,
     ) -> BaseApi:
-        if model is not None:
-            return self._build_manual_client(provider, model)
+        with self._reload_lock:
+            if model is not None:
+                return self._build_manual_client(provider, model)
 
-        if provider is None:
-            if self._default_client is None:
-                raise ValueError("默认服务商客户端尚未初始化")
-            return self._default_client
+            if provider is None:
+                if self._default_client is None:
+                    raise ValueError("默认服务商客户端尚未初始化")
+                return self._default_client
 
-        provider = provider.strip().lower()
-        if provider not in self._clients:
-            available_providers = ", ".join(self._clients.keys())
-            raise ValueError(
-                f"未找到服务商 '{provider}'，可用的服务商: {available_providers}"
-            )
+            provider = provider.strip().lower()
+            if provider not in self._clients:
+                available_providers = ", ".join(self._clients.keys())
+                raise ValueError(
+                    f"未找到服务商 '{provider}'，可用的服务商: {available_providers}"
+                )
 
-        return self._clients[provider]
+            return self._clients[provider]
 
     def _build_manual_client(
         self,
@@ -524,33 +705,34 @@ class ApiFactory:
         return list(self._clients.keys())
 
     def list_available_provider_models(self) -> list[dict[str, Any]]:
-        config = self._config
-        if config is None:
-            return []
+        with self._reload_lock:
+            config = self._config
+            if config is None:
+                return []
 
-        providers: list[dict[str, Any]] = []
-        seen_providers: set[str] = set()
-        for section_name in config.sections():
-            provider_name = section_name.lower()
-            if provider_name in seen_providers:
-                continue
-            if self._get_provider_section_name(provider_name) != section_name:
-                continue
-            if not self._is_known_provider(provider_name):
-                continue
+            providers: list[dict[str, Any]] = []
+            seen_providers: set[str] = set()
+            for section_name in config.sections():
+                provider_name = section_name.lower()
+                if provider_name in seen_providers:
+                    continue
+                if self._get_provider_section_name(provider_name) != section_name:
+                    continue
+                if not self._is_known_provider(provider_name):
+                    continue
 
-            models = self._list_available_models_for_provider(
-                config,
-                provider_name,
-                section_name,
-            )
-            if not models:
-                continue
+                models = self._list_available_models_for_provider(
+                    config,
+                    provider_name,
+                    section_name,
+                )
+                if not models:
+                    continue
 
-            providers.append({"id": provider_name, "models": models})
-            seen_providers.add(provider_name)
+                providers.append({"id": provider_name, "models": models})
+                seen_providers.add(provider_name)
 
-        return providers
+            return providers
 
     def _list_available_models_for_provider(
         self,
