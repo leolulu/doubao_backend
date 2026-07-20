@@ -7,4 +7,5 @@ dependencies = [
     "flask-cors",
     "requests",
     "volcengine-python-sdk[ark]",
+    "watchfiles",
 ]
