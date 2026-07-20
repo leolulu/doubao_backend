@@ -696,7 +696,7 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertNotIn("secret-a", str(summary))
         self.assertNotIn("secret-b", str(summary))
 
-    def test_reload_success_logging_failure_still_returns_true_and_keeps_new_config(self) -> None:
+    def test_reload_with_broken_nondesignated_section_keeps_new_config(self) -> None:
         factory = self.make_factory()
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -744,13 +744,65 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
             [{"id": "p2", "models": ["model-2"]}],
         )
 
+    def test_reload_success_logging_failure_still_returns_true_and_keeps_new_config(self) -> None:
+        factory = self.make_factory()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p1",
+                        "",
+                        "[P1]",
+                        "API_KEY = key-1",
+                        "MODEL = model-1",
+                    ])
+                )
+                factory._load_config()
+                factory._register_designated_provider()
+                factory._last_config_hash = factory._hash_file("credentials.config")
+
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p2",
+                        "",
+                        "[P2]",
+                        "API_KEY = key-2",
+                        "MODEL = model-2",
+                    ])
+                )
+
+                with patch.object(
+                    factory,
+                    "list_available_provider_models",
+                    side_effect=RuntimeError("synthetic logging failure"),
+                ):
+                    reloaded = factory.reload_credentials()
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertTrue(reloaded)
+        self.assertEqual(factory.get_designated_providers(), ["p2"])
+        self.assertEqual(factory.list_providers(), ["p2"])
+        self.assertEqual(
+            factory.list_available_provider_models(),
+            [{"id": "p2", "models": ["model-2"]}],
+        )
+
     def test_runtime_summary_survives_broken_interpolation_sections(self) -> None:
         factory = self.make_factory()
         config = configparser.ConfigParser()
         config.read_dict({
             "designated_provider": {"PROVIDER": "p1"},
             "P1": {"API_KEY": "secret", "MODEL": "model-1"},
-            "EXTRA": {"NOTE": "broken %(missing)s value"},
+            "P2": {
+                "API_KEY": "broken-secret-%(missing)s",
+                "MODEL": "model-2",
+            },
         })
         factory._config = config
         factory._set_designated_providers(["p1"])
@@ -760,10 +812,20 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         safe_summary = factory._safe_runtime_summary()
 
         self.assertEqual(summary["designated_providers"], ["p1"])
-        extra = next(item for item in summary["sections"] if item["section"] == "EXTRA")
-        self.assertIn("error", extra)
+        p2_summary = next(item for item in summary["sections"] if item["section"] == "P2")
+        self.assertEqual(p2_summary["error"], "InterpolationMissingOptionError")
         self.assertIsInstance(safe_summary, dict)
         self.assertNotIn("secret", str(summary))
+
+        with patch.object(
+            factory,
+            "_build_runtime_summary",
+            side_effect=RuntimeError("broken-secret"),
+        ):
+            unavailable_summary = factory._safe_runtime_summary()
+
+        self.assertEqual(unavailable_summary, "<summary unavailable: RuntimeError>")
+        self.assertNotIn("secret", unavailable_summary)
 
 
 class CredentialsWatcherTest(unittest.TestCase):

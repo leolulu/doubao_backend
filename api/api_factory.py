@@ -263,7 +263,7 @@ class ApiFactory:
         try:
             return self._build_runtime_summary()
         except Exception as summary_error:
-            return f"<summary unavailable: {type(summary_error).__name__}: {summary_error}>"
+            return f"<summary unavailable: {type(summary_error).__name__}>"
 
     def _build_runtime_summary(self) -> dict[str, Any]:
         """Build a redacted config snapshot for logs. Prefer never raising."""
@@ -275,7 +275,7 @@ class ApiFactory:
             except Exception as sections_error:
                 sections.append({
                     "section": "<sections unreadable>",
-                    "error": f"{type(sections_error).__name__}: {sections_error}",
+                    "error": type(sections_error).__name__,
                 })
                 section_names = []
 
@@ -286,9 +286,7 @@ class ApiFactory:
                 try:
                     items = list(config.items(section_name))
                 except Exception as section_error:
-                    section_info["error"] = (
-                        f"{type(section_error).__name__}: {section_error}"
-                    )
+                    section_info["error"] = type(section_error).__name__
                     sections.append(section_info)
                     continue
 
@@ -308,7 +306,7 @@ class ApiFactory:
                             section_info[key.upper()] = value
                     except Exception as item_error:
                         section_info[str(key)] = (
-                            f"<unreadable: {type(item_error).__name__}: {item_error}>"
+                            f"<unreadable: {type(item_error).__name__}>"
                         )
                 sections.append(section_info)
 
