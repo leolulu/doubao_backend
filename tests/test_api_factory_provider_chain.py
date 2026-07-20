@@ -1,8 +1,11 @@
 import configparser
 import os
 import tempfile
+import threading
 import typing
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 if not hasattr(typing, "override"):
     typing.override = lambda func: func
@@ -16,6 +19,7 @@ from api.kimi import Kimi
 from api.param_schema import ParamType, ProviderParam
 from api.provider_fallback_api import ProviderFallbackApi
 from api.retrying_api import ProviderSwitchEvent, RetryingApi
+from models.session_manager import SessionManager
 
 
 class FakeProvider(BaseApi):
@@ -74,6 +78,9 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
             "p2": FakeProvider,
             "p3": FakeProvider,
         }
+        factory._credentials_path = "credentials.config"
+        factory._reload_lock = threading.RLock()
+        factory._last_config_hash = None
         return factory
 
     def test_parse_designated_providers_normalizes_and_validates_list(self) -> None:
@@ -472,6 +479,263 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertEqual(events[0].from_provider, "p1")
         self.assertEqual(events[0].to_provider, "p2")
         self.assertEqual(events[0].targets, ["model-1", "model-2"])
+
+    def _write_credentials(self, content: str) -> None:
+        with open("credentials.config", "w", encoding="utf-8") as config_file:
+            config_file.write(content)
+
+    def test_reload_credentials_updates_providers_models_and_default_chain(self) -> None:
+        factory = self.make_factory()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p1",
+                        "",
+                        "[P1]",
+                        "API_KEY = key-1",
+                        "MODEL = model-1",
+                    ])
+                )
+                factory._load_config()
+                factory._register_designated_provider()
+                factory._last_config_hash = factory._hash_file("credentials.config")
+
+                self.assertEqual(factory.get_designated_providers(), ["p1"])
+                self.assertEqual(
+                    factory.list_available_provider_models(),
+                    [{"id": "p1", "models": ["model-1"]}],
+                )
+
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p1,p2",
+                        "",
+                        "[P1]",
+                        "API_KEY = key-1",
+                        "MODEL = model-1,model-extra",
+                        "",
+                        "[P2]",
+                        "API_KEY = key-2",
+                        "MODEL = model-2",
+                    ])
+                )
+
+                reloaded = factory.reload_credentials()
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertTrue(reloaded)
+        self.assertEqual(factory.get_designated_providers(), ["p1", "p2"])
+        self.assertIsInstance(factory.get_client(), ProviderFallbackApi)
+        self.assertEqual(
+            factory.list_available_provider_models(),
+            [
+                {"id": "p1", "models": ["model-1", "model-extra"]},
+                {"id": "p2", "models": ["model-2"]},
+            ],
+        )
+        manual_client = factory.get_client("p1", "model-extra")
+        self.assertIsInstance(manual_client, RetryingApi)
+        self.assertEqual(manual_client.client.model, "model-extra")
+
+    def test_reload_credentials_keeps_previous_config_when_invalid(self) -> None:
+        factory = self.make_factory()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p1",
+                        "",
+                        "[P1]",
+                        "API_KEY = key-1",
+                        "MODEL = model-1",
+                    ])
+                )
+                factory._load_config()
+                factory._register_designated_provider()
+                factory._last_config_hash = factory._hash_file("credentials.config")
+                previous_client = factory.get_client("p1")
+                previous_models = factory.list_available_provider_models()
+                previous_hash = factory._last_config_hash
+
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p1",
+                        "",
+                        "[P1]",
+                        "API_KEY =",
+                        "MODEL = model-1",
+                    ])
+                )
+
+                reloaded = factory.reload_credentials()
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertFalse(reloaded)
+        self.assertEqual(factory.get_designated_providers(), ["p1"])
+        self.assertIs(factory.get_client("p1"), previous_client)
+        self.assertEqual(factory.list_available_provider_models(), previous_models)
+        self.assertEqual(factory._last_config_hash, previous_hash)
+
+    def test_reload_credentials_skips_when_content_unchanged(self) -> None:
+        factory = self.make_factory()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p1",
+                        "",
+                        "[P1]",
+                        "API_KEY = key-1",
+                        "MODEL = model-1",
+                    ])
+                )
+                factory._load_config()
+                factory._register_designated_provider()
+                factory._last_config_hash = factory._hash_file("credentials.config")
+                previous_client = factory.get_client("p1")
+
+                reloaded = factory.reload_credentials()
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertFalse(reloaded)
+        self.assertIs(factory.get_client("p1"), previous_client)
+
+    def test_existing_session_keeps_old_client_after_reload(self) -> None:
+        factory = self.make_factory()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p1",
+                        "",
+                        "[P1]",
+                        "API_KEY = key-1",
+                        "MODEL = model-1",
+                    ])
+                )
+                factory._load_config()
+                factory._register_designated_provider()
+                factory._last_config_hash = factory._hash_file("credentials.config")
+
+                manager = SessionManager(api_factory=factory)
+                session = manager.get_or_create_session("conversation-1", provider="p1")
+                bound_client = session.client
+
+                self._write_credentials(
+                    "\n".join([
+                        "[designated_provider]",
+                        "PROVIDER = p2",
+                        "",
+                        "[P1]",
+                        "API_KEY = key-1-new",
+                        "MODEL = model-1",
+                        "",
+                        "[P2]",
+                        "API_KEY = key-2",
+                        "MODEL = model-2",
+                    ])
+                )
+                self.assertTrue(factory.reload_credentials())
+
+                same_session = manager.get_or_create_session("conversation-1", provider="p2")
+                new_session = manager.get_or_create_session("conversation-2")
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertIs(same_session, session)
+        self.assertIs(same_session.client, bound_client)
+        self.assertIsNot(new_session.client, bound_client)
+        self.assertEqual(factory.get_designated_providers(), ["p2"])
+        self.assertEqual(
+            factory.list_available_provider_models(),
+            [
+                {"id": "p1", "models": ["model-1"]},
+                {"id": "p2", "models": ["model-2"]},
+            ],
+        )
+
+    def test_runtime_summary_redacts_api_keys(self) -> None:
+        factory = self.make_factory()
+        config = configparser.ConfigParser()
+        config.read_dict({
+            "designated_provider": {"PROVIDER": "p1"},
+            "P1": {"API_KEY": "secret-a,secret-b", "MODEL": "model-1"},
+        })
+        factory._config = config
+        factory._set_designated_providers(["p1"])
+        factory._clients = {"p1": FakeProvider("secret-a", "model-1")}
+        factory._last_config_hash = "abc"
+
+        summary = factory._build_runtime_summary()
+
+        self.assertEqual(summary["designated_providers"], ["p1"])
+        self.assertEqual(summary["sections"][0]["API_KEY"], "<2 value(s) redacted>")
+        self.assertEqual(summary["sections"][0]["MODEL"], "model-1")
+        self.assertNotIn("secret-a", str(summary))
+        self.assertNotIn("secret-b", str(summary))
+
+
+class CredentialsWatcherTest(unittest.TestCase):
+    def test_start_credentials_watcher_calls_reload_on_matching_file_event(self) -> None:
+        from api.credentials_watcher import start_credentials_watcher
+        from watchfiles import Change
+
+        reloaded = threading.Event()
+
+        class FakeFactory:
+            def reload_credentials(self) -> bool:
+                reloaded.set()
+                return True
+
+        stop_event = threading.Event()
+
+        def fake_watch(*_args, **_kwargs):
+            yield {(Change.modified, str(Path.cwd() / "credentials.config"))}
+            stop_event.set()
+            return
+            yield
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            previous_cwd = os.getcwd()
+            os.chdir(temp_dir)
+            try:
+                with open("credentials.config", "w", encoding="utf-8") as config_file:
+                    config_file.write("[designated_provider]\nPROVIDER = p1\n")
+                with patch("api.credentials_watcher.watch", side_effect=fake_watch):
+                    thread = start_credentials_watcher(
+                        FakeFactory(),
+                        credentials_path="credentials.config",
+                        stop_event=stop_event,
+                    )
+                    self.assertTrue(reloaded.wait(timeout=2))
+                    stop_event.set()
+                    thread.join(timeout=2)
+            finally:
+                os.chdir(previous_cwd)
+
+        self.assertFalse(thread.is_alive())
 
 
 if __name__ == "__main__":
