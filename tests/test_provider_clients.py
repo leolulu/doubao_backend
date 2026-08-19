@@ -256,6 +256,91 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertTrue(stream.call_args.kwargs["request_body"]["reasoning_split"])
 
 
+
+    def test_discover_models_fetches_model_ids_from_models_endpoint(self) -> None:
+        calls = []
+
+        def get(url, headers, timeout):
+            calls.append((url, headers, timeout))
+            return FakeResponse(200, payload={
+                "data": [
+                    {"id": "gpt-4o"},
+                    {"id": "gpt-4o-mini"},
+                    {"id": "o1-mini"},
+                ]
+            })
+
+        with patch("api.chat_completion.requests.get", side_effect=get):
+            models = ChatCompletion(
+                "https://example.test/v1",
+                "secret-key",
+                "__discovery__",
+                provider_name="chat_completion:test",
+            ).discover_models()
+
+        self.assertEqual(models, ["gpt-4o", "gpt-4o-mini", "o1-mini"])
+        self.assertEqual(calls[0][0], "https://example.test/v1/models")
+        self.assertEqual(calls[0][1]["Authorization"], "Bearer secret-key")
+
+    def test_discover_models_raises_on_non_200(self) -> None:
+        def get(url, headers, timeout):
+            return FakeResponse(401, text="Unauthorized")
+
+        with patch("api.chat_completion.requests.get", side_effect=get):
+            with self.assertRaises(Exception) as ctx:
+                ChatCompletion(
+                    "https://example.test/v1",
+                    "key",
+                    "__discovery__",
+                ).discover_models()
+
+        self.assertIn("401", str(ctx.exception))
+
+    def test_discover_models_raises_on_malformed_response(self) -> None:
+        def get(url, headers, timeout):
+            return FakeResponse(200, payload={"unexpected": True})
+
+        with patch("api.chat_completion.requests.get", side_effect=get):
+            with self.assertRaises(Exception) as ctx:
+                ChatCompletion(
+                    "https://example.test/v1",
+                    "key",
+                    "__discovery__",
+                ).discover_models()
+
+        self.assertIn("data", str(ctx.exception))
+
+    def test_discover_models_raises_on_empty_model_list(self) -> None:
+        def get(url, headers, timeout):
+            return FakeResponse(200, payload={"data": []})
+
+        with patch("api.chat_completion.requests.get", side_effect=get):
+            with self.assertRaises(Exception) as ctx:
+                ChatCompletion(
+                    "https://example.test/v1",
+                    "key",
+                    "__discovery__",
+                ).discover_models()
+
+        self.assertIn("no models", str(ctx.exception).lower())
+
+    def test_discover_models_strips_trailing_slash_from_base_url(self) -> None:
+        calls = []
+
+        def get(url, headers, timeout):
+            calls.append(url)
+            return FakeResponse(200, payload={"data": [{"id": "m1"}]})
+
+        with patch("api.chat_completion.requests.get", side_effect=get):
+            ChatCompletion(
+                "https://example.test/v1/",
+                "key",
+                "__discovery__",
+            ).discover_models()
+
+        self.assertEqual(calls[0], "https://example.test/v1/models")
+
+
 class KimiProviderTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

@@ -828,6 +828,246 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertNotIn("secret", unavailable_summary)
 
 
+
+class AutoModelDiscoveryTest(unittest.TestCase):
+    """Tests for auto model discovery in ApiFactory."""
+
+    def make_factory(self, provider_classes=None):
+        factory = object.__new__(ApiFactory)
+        factory._clients = {}
+        factory._default_client = None
+        factory._designated_providers = ["chat_completion:test"]
+        factory._designated_provider = "chat_completion:test"
+        factory._credentials = {
+            "designated_provider": "chat_completion:test",
+            "designated_providers": ["chat_completion:test"],
+        }
+        factory._config = configparser.ConfigParser()
+        factory._failure_handlers = []
+        factory._provider_classes = provider_classes or {}
+        factory._credentials_path = "credentials.config"
+        factory._reload_lock = threading.RLock()
+        factory._last_config_hash = None
+        factory._auto_discovered_models = {}
+        return factory
+
+    def _make_chat_completion_config(self, model_value):
+        factory = self.make_factory()
+        factory._config.read_string(
+            "\n".join([
+                "[CHAT_COMPLETION:TEST]",
+                "BASE_URL = https://example.test/v1",
+                "API_KEY = test-key",
+                f"MODEL = {model_value}",
+            ])
+        )
+        factory._credentials["chat_completion:test"] = {
+            "base_url": "https://example.test/v1",
+            "api_key": "test-key",
+            "model": model_value,
+            "provider_name": "chat_completion:test",
+        }
+        return factory
+
+    def test_auto_model_discovery_builds_fallback_chain(self):
+        factory = self._make_chat_completion_config("auto")
+        discovered = ["m1", "m2", "m3"]
+
+        with patch.object(
+            ChatCompletion, "discover_models", return_value=discovered
+        ):
+            client = factory._build_configured_provider_client(
+                "chat_completion:test", ChatCompletion
+            )
+
+        self.assertIsInstance(client, FallbackApi)
+        self.assertEqual(
+            [e.target for e in client.entries],
+            ["m1", "m2", "m3"],
+        )
+        self.assertEqual(
+            factory._auto_discovered_models["chat_completion:test"],
+            ["m1", "m2", "m3"],
+        )
+
+    def test_auto_model_discovery_caps_at_limit(self):
+        factory = self._make_chat_completion_config("auto")
+        discovered = [f"m{i}" for i in range(15)]
+
+        with patch.object(
+            ChatCompletion, "discover_models", return_value=discovered
+        ):
+            client = factory._build_configured_provider_client(
+                "chat_completion:test", ChatCompletion
+            )
+
+        self.assertIsInstance(client, FallbackApi)
+        self.assertEqual(len(client.entries), 10)
+        self.assertEqual(
+            [e.target for e in client.entries],
+            [f"m{i}" for i in range(10)],
+        )
+
+    def test_auto_pattern_filters_and_caps(self):
+        factory = self._make_chat_completion_config("auto:gpt-")
+        discovered = ["gpt-4o", "gpt-4o-mini", "claude-3", "gpt-3.5", "o1", "gpt-1", "gpt-2", "gpt-5", "gpt-6", "gpt-7", "gpt-8", "gpt-9", "gpt-10"]
+        expected = ["gpt-4o", "gpt-4o-mini", "gpt-3.5", "gpt-1", "gpt-2", "gpt-5", "gpt-6", "gpt-7", "gpt-8", "gpt-9"]
+
+        with patch.object(
+            ChatCompletion, "discover_models", return_value=discovered
+        ):
+            client = factory._build_configured_provider_client(
+                "chat_completion:test", ChatCompletion
+            )
+
+        self.assertIsInstance(client, FallbackApi)
+        self.assertEqual(
+            [e.target for e in client.entries],
+            expected,
+        )
+
+    def test_auto_pattern_no_match_raises(self):
+        factory = self._make_chat_completion_config("auto:nonexistent")
+        discovered = ["m1", "m2"]
+
+        with patch.object(
+            ChatCompletion, "discover_models", return_value=discovered
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                factory._build_configured_provider_client(
+                    "chat_completion:test", ChatCompletion
+                )
+
+        self.assertIn("未找到匹配的模型", str(ctx.exception))
+
+    def test_auto_discovery_failure_raises(self):
+        factory = self._make_chat_completion_config("auto")
+
+        with patch.object(
+            ChatCompletion, "discover_models", side_effect=Exception("401")
+        ):
+            with self.assertRaises(Exception):
+                factory._build_configured_provider_client(
+                    "chat_completion:test", ChatCompletion
+                )
+
+    def test_list_available_provider_models_returns_discovered_for_auto(self):
+        factory = self._make_chat_completion_config("auto")
+        factory._auto_discovered_models["chat_completion:test"] = ["m1", "m2"]
+
+        result = factory.list_available_provider_models()
+
+        self.assertEqual(result, [
+            {"id": "chat_completion:test", "models": ["m1", "m2"]},
+        ])
+
+    def test_list_available_provider_models_empty_for_auto_before_discovery(self):
+        factory = self._make_chat_completion_config("auto")
+
+        result = factory.list_available_provider_models()
+
+        self.assertEqual(result, [])
+
+    def test_manual_mode_uses_discovered_snapshot_for_auto(self):
+        factory = self._make_chat_completion_config("auto")
+        factory._auto_discovered_models["chat_completion:test"] = ["m1", "m2"]
+
+        client = factory.get_client("chat_completion:test", "m2")
+
+        self.assertIsInstance(client, RetryingApi)
+        self.assertEqual(client.client.model, "m2")
+
+    def test_manual_mode_rejects_model_not_in_discovered_snapshot(self):
+        factory = self._make_chat_completion_config("auto")
+        factory._auto_discovered_models["chat_completion:test"] = ["m1", "m2"]
+
+        with self.assertRaises(ManualModelSelectionError):
+            factory.get_client("chat_completion:test", "m3")
+
+    def test_is_auto_model_detects_sentinels(self):
+        factory = self.make_factory()
+        self.assertTrue(factory._is_auto_model("auto"))
+        self.assertTrue(factory._is_auto_model(""))
+        self.assertTrue(factory._is_auto_model("auto:gpt-"))
+        self.assertTrue(factory._is_auto_model("AUTO"))
+        self.assertTrue(factory._is_auto_model("  auto  "))
+        self.assertFalse(factory._is_auto_model("gpt-4o"))
+        self.assertFalse(factory._is_auto_model("auto-1"))
+
+    def test_parse_auto_pattern_extracts_pattern(self):
+        factory = self.make_factory()
+        self.assertIsNone(factory._parse_auto_pattern("auto"))
+        self.assertIsNone(factory._parse_auto_pattern(""))
+        self.assertEqual(factory._parse_auto_pattern("auto:gpt-"), "gpt-")
+        self.assertEqual(factory._parse_auto_pattern("AUTO:claude"), "claude")
+
+    def test_reload_auto_providers_replaces_on_change(self):
+        factory = self._make_chat_completion_config("auto")
+        factory._set_designated_providers(["chat_completion:test"])
+
+        with patch.object(
+            ChatCompletion, "discover_models", return_value=["m1", "m2"]
+        ):
+            factory._register_designated_provider()
+
+        old_client = factory.get_client("chat_completion:test")
+        self.assertIsInstance(old_client, FallbackApi)
+
+        with patch.object(
+            ChatCompletion, "discover_models", return_value=["m1", "m2", "m3"]
+        ):
+            results = factory.reload_auto_providers()
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["status"], "ok")
+        self.assertTrue(results[0]["rebuilt"])
+        new_client = factory.get_client("chat_completion:test")
+        self.assertIsInstance(new_client, FallbackApi)
+        self.assertEqual(
+            [e.target for e in new_client.entries],
+            ["m1", "m2", "m3"],
+        )
+
+    def test_reload_auto_providers_skips_when_unchanged(self):
+        factory = self._make_chat_completion_config("auto")
+        factory._set_designated_providers(["chat_completion:test"])
+
+        with patch.object(
+            ChatCompletion, "discover_models", return_value=["m1", "m2"]
+        ):
+            factory._register_designated_provider()
+
+        old_client = factory.get_client("chat_completion:test")
+
+        with patch.object(
+            ChatCompletion, "discover_models", return_value=["m1", "m2"]
+        ):
+            results = factory.reload_auto_providers()
+
+        self.assertEqual(results[0]["rebuilt"], False)
+        self.assertIs(factory.get_client("chat_completion:test"), old_client)
+
+    def test_reload_auto_providers_keeps_old_on_failure(self):
+        factory = self._make_chat_completion_config("auto")
+        factory._set_designated_providers(["chat_completion:test"])
+
+        with patch.object(
+            ChatCompletion, "discover_models", return_value=["m1", "m2"]
+        ):
+            factory._register_designated_provider()
+
+        old_client = factory.get_client("chat_completion:test")
+
+        with patch.object(
+            ChatCompletion, "discover_models", side_effect=Exception("network error")
+        ):
+            results = factory.reload_auto_providers()
+
+        self.assertEqual(results[0]["status"], "failed")
+        self.assertFalse(results[0]["rebuilt"])
+        self.assertIs(factory.get_client("chat_completion:test"), old_client)
+
+
 class CredentialsWatcherTest(unittest.TestCase):
     def test_start_credentials_watcher_calls_reload_on_matching_file_event(self) -> None:
         from api.credentials_watcher import start_credentials_watcher

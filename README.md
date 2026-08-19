@@ -14,6 +14,8 @@
 - ✅ 自动配置文件生成和参数校验
 - ✅ 智谱 AI 支持 Coding 专用端点
 - ✅ `credentials.config` 热更新（基于 watchfiles，无需重启服务）
+- ✅ 通用 OpenAI 兼容接口支持自动模型发现（`/v1/models`），无需手动填写模型列表
+- ✅ 通用 OpenAI 兼容接口支持自动模型发现（`/v1/models`），无需手动填写模型列表
 
 ## 快速开始
 
@@ -386,6 +388,7 @@ curl -X POST http://localhost:11301/ \
 | `/help` | GET | 查看帮助信息 |
 | `/inspect` | GET | 查看所有会话的 ID 和消息历史 |
 | `/models` | GET | 查看当前配置中可手动选择的服务商和模型 |
+| `/refresh-upstream-models` | POST | 手动刷新上游模型发现结果 |
 
 `GET /models` 返回当前进程已加载配置中可手动选择的 provider/model：
 
@@ -405,6 +408,31 @@ curl -X POST http://localhost:11301/ \
 ```
 
 `id` 是请求中的 `provider` 值，`models` 中的字符串是请求中的 `model` 值。普通服务商从 `MODEL` 读取模型，豆包从 `ACCESS_POINT` 读取并同样通过 `model` 参数提交。返回顺序与配置文件一致，模型名称保留配置中的大小写。默认供应商链之外、配置完整且项目支持的服务商也会返回。响应不会包含 API Key、Base URL 等其他配置内容，也不会连接上游服务检查模型或凭据状态。服务运行期间修改并成功热加载 `credentials.config` 后，该列表会立即更新，无需重启服务。
+
+使用 `auto` 模式的 provider，`/models` 返回最近一次自动发现到的模型列表（来自内存快照，不会往上游发请求）。
+
+`POST /refresh-upstream-models` 立即对所有 `auto` 模式的 provider 重新执行模型发现，更新内存中的客户端和模型列表。返回各 provider 的发现结果摘要：
+
+```json
+{
+  "results": [
+    {
+      "provider": "chat_completion:openrouter",
+      "status": "ok",
+      "models_count": 8,
+      "rebuilt": true
+    },
+    {
+      "provider": "chat_completion:siliconflow",
+      "status": "failed",
+      "error": "Model discovery failed: 401, ...",
+      "rebuilt": false
+    }
+  ]
+}
+```
+
+`status` 为 `ok` 表示发现成功，`rebuilt` 为 `true` 表示模型列表有变化并已重建客户端，`false` 表示模型列表未变跳过重建。`status` 为 `failed` 表示发现失败，保留上一次的客户端不变。
 
 `GET /inspect` 返回当前进程内存中的全部会话，例如：
 
@@ -488,7 +516,7 @@ curl -X POST http://localhost:11301/ \
 **配置参数：**
 - `BASE_URL`: OpenAI 兼容接口的基础地址，通常以 `/v1` 结尾（必填）
 - `API_KEY`: API 密钥（必填）
-- `MODEL`: 模型名称（必填）
+- `MODEL`: 模型名称，或 `auto` / `auto:<pattern>` 启用自动模型发现（见下方说明）
 
 ```ini
 [designated_provider]
@@ -506,6 +534,36 @@ MODEL = 另一个模型名称
 ```
 
 `BASE_URL` 只需要写到 OpenAI 兼容接口的基础路径，程序会自动追加 `/chat/completions`。`API_KEY` 和 `MODEL` 继续支持逗号分隔的回退语法。HTTP 失败响应和请求异常会写入 `logs/llm_error_requests.jsonl`；成功请求会写入滚动日志 `logs/llm_success_requests.jsonl`，最多保留最近 300 条记录。请求日志不会记录 API 密钥。
+
+#### 自动模型发现
+
+`MODEL` 留空或写 `auto` 时，程序会在启动和定时刷新时自动调用上游的 `/v1/models` 端点获取可用模型列表，无需手动填写模型名称：
+
+```ini
+[CHAT_COMPLETION:PROVIDER_NAME]
+BASE_URL = https://example.com/v1
+API_KEY = 你的API密钥
+MODEL = auto
+```
+
+也可以用 `auto:<pattern>` 按子串过滤，只保留模型 ID 中包含指定子串的模型：
+
+```ini
+[CHAT_COMPLETION:PROVIDER_NAME]
+BASE_URL = https://example.com/v1
+API_KEY = 你的API密钥
+MODEL = auto:gpt-
+```
+
+发现到的模型按上游返回顺序进入回退链，上限 10 个（超过截断）。`auto:pattern` 先过滤再截断。发现失败或过滤后无匹配模型时，该 provider 保留上一次成功发现的客户端，不影响其他 provider。
+
+**刷新时机：**
+
+- **启动时**：构建客户端时自动发现一次
+- **定时刷新**：每 3600 秒自动重新发现，更新内存中的模型列表和客户端
+- **手动刷新**：`POST /refresh-upstream-models` 立即触发重新发现
+
+`GET /models` 和手动模式（`provider` + `model` 参数）只读取内存中已发现的模型快照，不会往上游发请求。
 
 ## 架构说明
 
@@ -778,7 +836,7 @@ MODEL = "kimi-k2.6"  # 也可以配置 kimi-k2.6,kimi-for-coding 做模型回退
 
 ```
 doubao_backend/
-├── main.py                    # 入口文件（启动 credentials 热更新监控）
+├── main.py                    # 入口文件（启动 credentials 热更新和模型发现监控）
 ├── pyproject.toml             # Python 版本与依赖声明
 ├── uv.lock                    # uv 依赖锁定文件
 ├── credentials.config         # API 凭证配置（自动生成，支持热更新）
@@ -786,6 +844,8 @@ doubao_backend/
 │   ├── base_api.py           # AI 接口抽象基类
 │   ├── api_factory.py        # API 工厂类（管理多个服务商，支持 reload）
 │   ├── credentials_watcher.py # credentials.config 文件监控
+│   ├── model_discovery_watcher.py # 上游模型自动发现定时刷新
+│   ├── chat_completion.py     # 通用 OpenAI 兼容接口实现
 │   ├── param_schema.py       # 参数定义和校验模块
 │   ├── doubao.py             # 豆包 API 实现
 │   ├── zhipu.py              # 智谱 AI API 实现

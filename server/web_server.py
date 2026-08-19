@@ -22,6 +22,11 @@ def home():
         "provider : AI服务商名称(可选)，不提供则使用默认服务商",
         "model : 模型名称(可选)，提供时必须同时提供 provider",
         "user_message : 用户消息(必填)",
+        "",
+        "其他端点:",
+        "GET /models : 查看当前可手动选择的服务商和模型",
+        "GET /inspect : 查看所有会话的ID和消息历史",
+        "POST /refresh-upstream-models : 手动刷新上游模型发现结果",
     ]
     return "<br>".join(content_lines)
 
@@ -39,6 +44,12 @@ def list_available_models():
     return jsonify({
         "providers": sm.api_factory.list_available_provider_models(),
     })
+
+
+@app.route("/refresh-upstream-models", methods=["POST"])
+def refresh_upstream_models():
+    results = sm.api_factory.reload_auto_providers()
+    return jsonify({"results": results})
 
 
 def _should_preserve_history(preserve):

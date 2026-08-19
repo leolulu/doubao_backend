@@ -78,6 +78,7 @@ class FakeSessionManager:
         self.pool: dict[str, FakeSession] = {}
         self.requests: list[tuple[str | None, str | None, str | None]] = []
         self.api_factory = self
+        self.reload_auto_calls = 0
 
     def list_available_provider_models(self):
         return [
@@ -94,6 +95,12 @@ class FakeSessionManager:
 
     def list_sessions(self):
         return list(self.pool.values())
+
+    def reload_auto_providers(self):
+        self.reload_auto_calls += 1
+        return [
+            {"provider": "chat_completion:test", "status": "ok", "models_count": 3, "rebuilt": True},
+        ]
 
 
 class WebServerTest(unittest.TestCase):
@@ -291,14 +298,15 @@ class WebServerTest(unittest.TestCase):
         web_server = self.load_server_module()
         client = web_server.app.test_client()
         web_server.sm.get_or_create_session("s1", provider="p1")
+        web_server.sm.get_or_create_session("s2", provider="p2")
 
         response = client.get("/inspect")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), [{
-            "id": "s1",
-            "messages": [{"role": "user", "content": "stored"}],
-        }])
+        self.assertEqual(response.get_json(), [
+            {"id": "s1", "messages": [{"role": "user", "content": "stored"}]},
+            {"id": "s2", "messages": [{"role": "user", "content": "stored"}]},
+        ])
 
     def test_models_returns_available_provider_models(self) -> None:
         web_server = self.load_server_module()
@@ -314,6 +322,20 @@ class WebServerTest(unittest.TestCase):
             ],
         })
         self.assertEqual(client.post("/models").status_code, 405)
+
+    def test_refresh_upstream_models_calls_reload_and_returns_results(self) -> None:
+        web_server = self.load_server_module()
+        client = web_server.app.test_client()
+
+        response = client.post("/refresh-upstream-models")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {
+            "results": [
+                {"provider": "chat_completion:test", "status": "ok", "models_count": 3, "rebuilt": True},
+            ],
+        })
+        self.assertEqual(web_server.sm.reload_auto_calls, 1)
 
     def test_help_endpoint_lists_provider_and_model_parameters(self) -> None:
         web_server = self.load_server_module()

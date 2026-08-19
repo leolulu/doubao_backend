@@ -30,8 +30,8 @@ class ChatCompletion(BaseApi):
             ProviderParam(
                 name="model",
                 param_type=ParamType.STRING,
-                required=True,
-                description="Model name"
+                required=False,
+                description="Model name, or 'auto' / 'auto:<pattern>' to discover models via /v1/models"
             ),
         ]
 
@@ -43,7 +43,17 @@ class ChatCompletion(BaseApi):
             for key, value in config.items()
             if key not in allowed_internal_config
         }
-        return super().validate_config(public_config)
+        is_valid, errors = super().validate_config(public_config)
+        if not is_valid:
+            # model is now optional; filter out the "缺少必填参数: model" error
+            # since it's expected when using auto-discovery
+            errors = [
+                e for e in errors
+                if e != "缺少必填参数: model"
+            ]
+            if not errors:
+                is_valid = True
+        return is_valid, errors
 
     def __init__(
         self,
@@ -111,3 +121,31 @@ class ChatCompletion(BaseApi):
         if self.base_url.endswith("/chat/completions"):
             return self.base_url
         return f"{self.base_url}/chat/completions"
+
+    def _models_url(self) -> str:
+        if self.base_url.endswith("/models"):
+            return self.base_url
+        return f"{self.base_url}/models"
+
+    def discover_models(self) -> List[str]:
+        """Fetch available model IDs from the upstream /v1/models endpoint."""
+        url = self._models_url()
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            raise Exception(
+                f"Model discovery failed: {response.status_code}, {response.text}"
+            )
+        result = response.json()
+        data = result.get("data")
+        if not isinstance(data, list):
+            raise Exception("Model discovery failed: response missing 'data' array")
+        models: List[str] = []
+        for item in data:
+            if isinstance(item, dict) and "id" in item:
+                models.append(str(item["id"]))
+        if not models:
+            raise Exception("Model discovery failed: no models found in response")
+        return models

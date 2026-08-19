@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Project-root relative path; hot reload watches this fixed filename only.
 CREDENTIALS_FILENAME = "credentials.config"
+MODEL_AUTO_SENTINEL = "auto"
+DISCOVERY_MODEL_LIMIT = 10
 _SENSITIVE_CONFIG_KEYS = frozenset({"api_key"})
 
 
@@ -49,6 +51,7 @@ class ApiFactory:
         self._credentials_path = CREDENTIALS_FILENAME
         self._reload_lock = threading.RLock()
         self._last_config_hash: str | None = None
+        self._auto_discovered_models: Dict[str, list[str]] = {}
         self._register_provider_classes()
         self._load_config()
         self._register_designated_provider()
@@ -216,6 +219,8 @@ class ApiFactory:
                 self._clients = new_clients
                 self._default_client = new_default_client
                 self._last_config_hash = new_hash
+                if hasattr(self, "_auto_discovered_models"):
+                    self._auto_discovered_models.clear()
 
                 # Runtime state is already committed. Logging must never undo
                 # success or bubble into the watcher thread.
@@ -457,6 +462,7 @@ class ApiFactory:
             comments.extend([
                 "回退语法: MODEL = model-a,model-b",
                 "每个 API_KEY 下按从左到右的顺序尝试模型。",
+                "留空或写 auto 可自动发现模型，写 auto:<pattern> 可按子串过滤。",
             ])
         elif config_key == "ACCESS_POINT":
             comments.extend([
@@ -548,7 +554,28 @@ class ApiFactory:
         target_param_name = self._get_target_param_name(client_class)
         active_target_param_name: str | None = None
         targets: list[str | None] = []
-        if target_param_name is not None and target_param_name in client_kwargs:
+
+        # --- Auto model discovery for ChatCompletion providers ---
+        if (
+            client_class is ChatCompletion
+            and target_param_name is not None
+            and target_param_name in client_kwargs
+            and self._is_auto_model(str(client_kwargs[target_param_name]))
+        ):
+            raw_model_value = str(client_kwargs[target_param_name])
+            discovered = self._discover_models_for_provider(name, client_kwargs)
+            pattern = self._parse_auto_pattern(raw_model_value)
+            if pattern is not None:
+                discovered = [m for m in discovered if pattern in m]
+            if not discovered:
+                raise ValueError(
+                    f"服务商 '{name}' 模型发现失败: 未找到匹配的模型"
+                )
+            discovered = discovered[:DISCOVERY_MODEL_LIMIT]
+            self._auto_discovered_models[name.lower()] = list(discovered)
+            targets = list(discovered)  # type: ignore
+            active_target_param_name = target_param_name
+        elif target_param_name is not None and target_param_name in client_kwargs:
             active_target_param_name = target_param_name
             targets.extend(self._parse_ordered_targets(client_kwargs[active_target_param_name], name, active_target_param_name))
         else:
@@ -604,6 +631,41 @@ class ApiFactory:
             config_key = param_name.upper()
             raise ValueError(f"服务商 [{provider_name.upper()}] 的 {config_key} 配置包含空值")
         return targets
+
+    def _is_auto_model(self, value: str) -> bool:
+        """Check if a model config value triggers auto-discovery."""
+        stripped = value.strip().lower()
+        return stripped == "" or stripped == MODEL_AUTO_SENTINEL or stripped.startswith(MODEL_AUTO_SENTINEL + ":")
+
+    def _parse_auto_pattern(self, value: str) -> str | None:
+        """Extract the pattern from an 'auto:<pattern>' value.
+
+        Returns None for bare 'auto' or empty (no filtering).
+        Returns the pattern string for 'auto:<pattern>'.
+        """
+        stripped = value.strip().lower()
+        if stripped.startswith(MODEL_AUTO_SENTINEL + ":"):
+            return stripped[len(MODEL_AUTO_SENTINEL) + 1:]
+        return None
+
+    def _discover_models_for_provider(
+        self,
+        provider_name: str,
+        client_kwargs: Dict[str, Any],
+    ) -> list[str]:
+        """Discover models via ChatCompletion.discover_models().
+
+        Raises on failure (network error, non-200, malformed response, empty list).
+        """
+        base_url = client_kwargs.get("base_url", "")
+        api_key = client_kwargs.get("api_key", "")
+        temp_client = ChatCompletion(
+            base_url=base_url,
+            api_key=api_key,
+            model="__discovery__",
+            provider_name=provider_name,
+        )
+        return temp_client.discover_models()
 
     def _wrap_provider_client(
         self,
@@ -696,19 +758,28 @@ class ApiFactory:
             )
 
         raw_targets = config.get(section_name, target_config_key)
-        try:
-            configured_targets = self._parse_ordered_targets(
-                raw_targets,
-                provider_name,
-                target_param_name,
-            )
-        except ValueError as exception:
-            raise ManualModelSelectionError(str(exception)) from exception
 
-        if model_name not in configured_targets:
-            raise ManualModelSelectionError(
-                f"模型 '{model_name}' 未配置在服务商 '{provider_name}' 中"
-            )
+        # --- Auto provider: use discovered models from memory snapshot ---
+        if self._is_auto_model(raw_targets):
+            discovered = getattr(self, "_auto_discovered_models", {}).get(provider_name, [])
+            if model_name not in discovered:
+                raise ManualModelSelectionError(
+                    f"模型 '{model_name}' 未配置在服务商 '{provider_name}' 中"
+                )
+        else:
+            try:
+                configured_targets = self._parse_ordered_targets(
+                    raw_targets,
+                    provider_name,
+                    target_param_name,
+                )
+            except ValueError as exception:
+                raise ManualModelSelectionError(str(exception)) from exception
+
+            if model_name not in configured_targets:
+                raise ManualModelSelectionError(
+                    f"模型 '{model_name}' 未配置在服务商 '{provider_name}' 中"
+                )
 
         provider_config: Dict[str, Any] = {}
         for config_key, raw_value in config.items(section_name):
@@ -805,8 +876,15 @@ class ApiFactory:
             if not config.has_option(section_name, target_config_key):
                 return []
 
+            raw_targets = config.get(section_name, target_config_key)
+
+            # --- Auto provider: return discovered models from memory ---
+            if self._is_auto_model(raw_targets):
+                discovered = getattr(self, "_auto_discovered_models", {}).get(provider_name, [])
+                return list(discovered)
+
             configured_targets = self._parse_ordered_targets(
-                config.get(section_name, target_config_key),
+                raw_targets,
                 provider_name,
                 target_param_name,
             )
@@ -845,6 +923,121 @@ class ApiFactory:
             return models
         except (configparser.Error, TypeError, ValueError):
             return []
+
+    def reload_auto_providers(self) -> list[dict[str, Any]]:
+        """Re-discover models for all auto-mode ChatCompletion providers.
+
+        Iterates designated providers; for each that uses auto-discovery,
+        fetches the upstream model list and rebuilds that provider's client.
+        On per-provider failure, keeps the existing client and logs the error.
+
+        Returns a summary list of per-provider results.
+        """
+        with self._reload_lock:
+            config = self._config
+            if config is None:
+                return []
+
+            if not hasattr(self, "_auto_discovered_models"):
+                self._auto_discovered_models = {}
+
+            results: list[dict[str, Any]] = []
+            any_changed = False
+
+            for provider_name in self._designated_providers:
+                provider_class = self._get_provider_class(provider_name)
+                if provider_class is not ChatCompletion:
+                    continue
+
+                section_name = self._get_provider_section_name(provider_name)
+                if not config.has_section(section_name):
+                    continue
+
+                target_param_name = self._get_target_param_name(provider_class)
+                if target_param_name is None:
+                    continue
+
+                target_config_key = target_param_name.upper()
+                if not config.has_option(section_name, target_config_key):
+                    continue
+
+                raw_model = config.get(section_name, target_config_key)
+                if not self._is_auto_model(raw_model):
+                    continue
+
+                # Build provider_config for discovery
+                provider_config: Dict[str, Any] = {}
+                for config_key, raw_value in config.items(section_name):
+                    if config_key.startswith("#"):
+                        continue
+                    provider_config[config_key.lower()] = raw_value
+
+                for param in provider_class.get_params():
+                    if param.name in provider_config:
+                        provider_config[param.name] = param.parse_value(provider_config[param.name])
+                    elif param.default is not None:
+                        provider_config[param.name] = param.default
+
+                if self._is_chat_completion_provider(provider_name):
+                    provider_config["provider_name"] = provider_name
+
+                try:
+                    discovered = self._discover_models_for_provider(provider_name, provider_config)
+                    pattern = self._parse_auto_pattern(raw_model)
+                    if pattern is not None:
+                        discovered = [m for m in discovered if pattern in m]
+                    if not discovered:
+                        raise ValueError("no matching models found")
+
+                    discovered = discovered[:DISCOVERY_MODEL_LIMIT]
+                    previous = self._auto_discovered_models.get(provider_name, [])
+                    if discovered == previous:
+                        results.append({
+                            "provider": provider_name,
+                            "status": "ok",
+                            "models_count": len(discovered),
+                            "rebuilt": False,
+                        })
+                        continue
+
+                    self._auto_discovered_models[provider_name] = list(discovered)
+                    provider_config[target_param_name] = discovered[0] if len(discovered) == 1 else ",".join(discovered)
+                    new_client = self._build_provider_client(
+                        provider_name,
+                        provider_class,
+                        provider_config,
+                        failure_handlers=[],
+                    )
+                    self._clients[provider_name] = new_client
+                    any_changed = True
+                    results.append({
+                        "provider": provider_name,
+                        "status": "ok",
+                        "models_count": len(discovered),
+                        "rebuilt": True,
+                    })
+                    logger.info(
+                        "auto model discovery succeeded: provider=%s models=%s",
+                        provider_name,
+                        discovered,
+                    )
+                except Exception as exception:
+                    results.append({
+                        "provider": provider_name,
+                        "status": "failed",
+                        "error": str(exception),
+                        "rebuilt": False,
+                    })
+                    logger.warning(
+                        "auto model discovery failed; keeping existing client: provider=%s error=%s",
+                        provider_name,
+                        exception,
+                    )
+
+            if any_changed:
+                self._default_client = self._build_default_client(self._designated_providers)
+
+            return results
 
     def _is_chat_completion_provider(self, provider_name: str) -> bool:
         return (
