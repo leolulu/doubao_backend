@@ -892,7 +892,7 @@ class AutoModelDiscoveryTest(unittest.TestCase):
 
     def test_auto_model_discovery_caps_at_limit(self):
         factory = self._make_chat_completion_config("auto")
-        discovered = [f"m{i}" for i in range(15)]
+        discovered = [f"m{i}" for i in range(35)]
 
         with patch.object(
             ChatCompletion, "discover_models", return_value=discovered
@@ -902,16 +902,16 @@ class AutoModelDiscoveryTest(unittest.TestCase):
             )
 
         self.assertIsInstance(client, FallbackApi)
-        self.assertEqual(len(client.entries), 10)
+        self.assertEqual(len(client.entries), 30)
         self.assertEqual(
             [e.target for e in client.entries],
-            [f"m{i}" for i in range(10)],
+            [f"m{i}" for i in range(30)],
         )
 
     def test_auto_pattern_filters_and_caps(self):
         factory = self._make_chat_completion_config("auto:gpt-")
-        discovered = ["gpt-4o", "gpt-4o-mini", "claude-3", "gpt-3.5", "o1", "gpt-1", "gpt-2", "gpt-5", "gpt-6", "gpt-7", "gpt-8", "gpt-9", "gpt-10"]
-        expected = ["gpt-4o", "gpt-4o-mini", "gpt-3.5", "gpt-1", "gpt-2", "gpt-5", "gpt-6", "gpt-7", "gpt-8", "gpt-9"]
+        discovered = [f"gpt-{i}" for i in range(35)] + ["claude-3", "o1"]
+        expected = [f"gpt-{i}" for i in range(30)]
 
         with patch.object(
             ChatCompletion, "discover_models", return_value=discovered

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Project-root relative path; hot reload watches this fixed filename only.
 CREDENTIALS_FILENAME = "credentials.config"
 MODEL_AUTO_SENTINEL = "auto"
-DISCOVERY_MODEL_LIMIT = 10
+DISCOVERY_MODEL_LIMIT = 30
 _SENSITIVE_CONFIG_KEYS = frozenset({"api_key"})
 
 
