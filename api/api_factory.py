@@ -475,7 +475,13 @@ class ApiFactory:
 
     def _register_designated_provider(self):
         for provider_name in self._designated_providers:
-            self._register_provider(provider_name, self._get_provider_class(provider_name))
+            try:
+                self._register_provider(provider_name, self._get_provider_class(provider_name))
+            except Exception:
+                logger.exception(
+                    "provider registration failed; skipping unavailable provider: provider=%s",
+                    provider_name,
+                )
         self._default_client = self._build_default_client(self._designated_providers)
 
     def _register_provider(
@@ -493,14 +499,39 @@ class ApiFactory:
         )
 
     def _build_default_client(self, providers: list[str]) -> BaseApi:
-        if len(providers) == 1:
-            return self._clients[providers[0]]
+        available_providers = [
+            provider_name
+            for provider_name in providers
+            if provider_name in self._clients
+        ]
+        if not available_providers:
+            raise ValueError("没有可用的默认服务商客户端")
+        if len(available_providers) == 1:
+            return self._clients[available_providers[0]]
 
         entries: list[ProviderFallbackEntry] = []
-        for provider_name in providers:
+        for provider_name in available_providers:
+            client_class = self._get_provider_class(provider_name)
+            extra_kwargs: Dict[str, Any] | None = None
+            target_param_name = self._get_target_param_name(client_class)
+            provider_config = self._credentials.get(provider_name, {})
+            if (
+                client_class is ChatCompletion
+                and target_param_name is not None
+                and target_param_name in provider_config
+                and self._is_auto_model(str(provider_config[target_param_name]))
+            ):
+                discovered = self._auto_discovered_models.get(provider_name, [])
+                if not discovered:
+                    raise ValueError(
+                        f"服务商 '{provider_name}' 缺少可用的模型发现结果"
+                    )
+                extra_kwargs = {target_param_name: ",".join(discovered)}
+
             client = self._build_configured_provider_client(
                 provider_name,
-                self._get_provider_class(provider_name),
+                client_class,
+                extra_kwargs=extra_kwargs,
                 failure_handlers=[],
             )
             entries.append(ProviderFallbackEntry(provider_name=provider_name, client=client))
@@ -991,7 +1022,7 @@ class ApiFactory:
 
                     discovered = discovered[:DISCOVERY_MODEL_LIMIT]
                     previous = self._auto_discovered_models.get(provider_name, [])
-                    if discovered == previous:
+                    if discovered == previous and provider_name in self._clients:
                         results.append({
                             "provider": provider_name,
                             "status": "ok",
@@ -1000,7 +1031,6 @@ class ApiFactory:
                         })
                         continue
 
-                    self._auto_discovered_models[provider_name] = list(discovered)
                     provider_config[target_param_name] = discovered[0] if len(discovered) == 1 else ",".join(discovered)
                     new_client = self._build_provider_client(
                         provider_name,
@@ -1008,6 +1038,7 @@ class ApiFactory:
                         provider_config,
                         failure_handlers=[],
                     )
+                    self._auto_discovered_models[provider_name] = list(discovered)
                     self._clients[provider_name] = new_client
                     any_changed = True
                     results.append({

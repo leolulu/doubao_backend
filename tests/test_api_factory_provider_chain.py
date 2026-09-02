@@ -869,6 +869,121 @@ class AutoModelDiscoveryTest(unittest.TestCase):
         }
         return factory
 
+    def _make_partial_start_factory(self):
+        factory = self._make_chat_completion_config("auto")
+        factory._provider_classes.update({
+            "p1": FakeProvider,
+            "p2": FakeProvider,
+        })
+        factory._credentials.update({
+            "p1": {"api_key": "key-1", "model": "model-1"},
+            "p2": {"api_key": "key-2", "model": "model-2"},
+        })
+        factory._set_designated_providers([
+            "p1",
+            "p2",
+            "chat_completion:test",
+        ])
+        return factory
+
+    def test_startup_skips_failed_auto_provider_and_keeps_available_chain(self):
+        factory = self._make_partial_start_factory()
+
+        with self.assertLogs("api.api_factory", level="ERROR") as captured_logs:
+            with patch.object(
+                ChatCompletion,
+                "discover_models",
+                side_effect=Exception("network error"),
+            ) as discover_models:
+                factory._register_designated_provider()
+
+        discover_models.assert_called_once_with()
+        self.assertEqual(factory.list_providers(), ["p1", "p2"])
+        self.assertNotIn("chat_completion:test", factory._clients)
+        self.assertIsInstance(factory.get_client(), ProviderFallbackApi)
+        self.assertEqual(
+            [entry.provider_name for entry in factory.get_client().entries],
+            ["p1", "p2"],
+        )
+        self.assertTrue(any(
+            "skipping unavailable provider: provider=chat_completion:test" in message
+            for message in captured_logs.output
+        ))
+
+    def test_startup_fails_when_no_provider_can_initialize(self):
+        factory = self._make_chat_completion_config("auto")
+
+        with self.assertLogs("api.api_factory", level="ERROR"):
+            with patch.object(
+                ChatCompletion,
+                "discover_models",
+                side_effect=Exception("network error"),
+            ):
+                with self.assertRaisesRegex(ValueError, "没有可用的默认服务商客户端"):
+                    factory._register_designated_provider()
+
+    def test_startup_reuses_discovered_models_when_building_default_chain(self):
+        factory = self._make_chat_completion_config("auto")
+        factory._provider_classes["p1"] = FakeProvider
+        factory._credentials["p1"] = {
+            "api_key": "key-1",
+            "model": "model-1",
+        }
+        factory._set_designated_providers(["p1", "chat_completion:test"])
+
+        with patch.object(
+            ChatCompletion,
+            "discover_models",
+            return_value=["m1", "m2"],
+        ) as discover_models:
+            factory._register_designated_provider()
+
+        discover_models.assert_called_once_with()
+        default_client = factory.get_client()
+        self.assertIsInstance(default_client, ProviderFallbackApi)
+        auto_entry = default_client.entries[1]
+        self.assertEqual(auto_entry.provider_name, "chat_completion:test")
+        self.assertIsInstance(auto_entry.client, FallbackApi)
+        self.assertEqual(
+            [entry.target for entry in auto_entry.client.entries],
+            ["m1", "m2"],
+        )
+
+    def test_refresh_adds_provider_that_failed_during_startup(self):
+        factory = self._make_partial_start_factory()
+
+        with self.assertLogs("api.api_factory", level="ERROR"):
+            with patch.object(
+                ChatCompletion,
+                "discover_models",
+                side_effect=Exception("network error"),
+            ):
+                factory._register_designated_provider()
+
+        with patch.object(
+            ChatCompletion,
+            "discover_models",
+            return_value=["m1", "m2"],
+        ) as discover_models:
+            results = factory.reload_auto_providers()
+
+        discover_models.assert_called_once_with()
+        self.assertEqual(results, [{
+            "provider": "chat_completion:test",
+            "status": "ok",
+            "models_count": 2,
+            "rebuilt": True,
+        }])
+        self.assertEqual(
+            factory.list_providers(),
+            ["p1", "p2", "chat_completion:test"],
+        )
+        self.assertIsInstance(factory.get_client(), ProviderFallbackApi)
+        self.assertEqual(
+            [entry.provider_name for entry in factory.get_client().entries],
+            ["p1", "p2", "chat_completion:test"],
+        )
+
     def test_auto_model_discovery_builds_fallback_chain(self):
         factory = self._make_chat_completion_config("auto")
         discovered = ["m1", "m2", "m3"]
