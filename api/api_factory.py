@@ -912,7 +912,7 @@ class ApiFactory:
             # --- Auto provider: return discovered models from memory ---
             if self._is_auto_model(raw_targets):
                 discovered = getattr(self, "_auto_discovered_models", {}).get(provider_name, [])
-                return list(discovered)
+                return sorted(discovered, key=str.casefold)
 
             configured_targets = self._parse_ordered_targets(
                 raw_targets,

@@ -1068,13 +1068,31 @@ class AutoModelDiscoveryTest(unittest.TestCase):
 
     def test_list_available_provider_models_returns_discovered_for_auto(self):
         factory = self._make_chat_completion_config("auto")
-        factory._auto_discovered_models["chat_completion:test"] = ["m1", "m2"]
+        discovered = [
+            "tokenrhythm/deepseek",
+            "modelscope/Kimi-K3",
+            "GMI/MiniMax-M3",
+            "shuo/glm-5.2",
+        ]
+        factory._auto_discovered_models["chat_completion:test"] = discovered
 
         result = factory.list_available_provider_models()
 
         self.assertEqual(result, [
-            {"id": "chat_completion:test", "models": ["m1", "m2"]},
+            {
+                "id": "chat_completion:test",
+                "models": [
+                    "GMI/MiniMax-M3",
+                    "modelscope/Kimi-K3",
+                    "shuo/glm-5.2",
+                    "tokenrhythm/deepseek",
+                ],
+            },
         ])
+        self.assertEqual(
+            factory._auto_discovered_models["chat_completion:test"],
+            discovered,
+        )
 
     def test_list_available_provider_models_empty_for_auto_before_discovery(self):
         factory = self._make_chat_completion_config("auto")

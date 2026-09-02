@@ -409,7 +409,7 @@ curl -X POST http://localhost:11301/ \
 
 `id` 是请求中的 `provider` 值，`models` 中的字符串是请求中的 `model` 值。普通服务商从 `MODEL` 读取模型，豆包从 `ACCESS_POINT` 读取并同样通过 `model` 参数提交。返回顺序与配置文件一致，模型名称保留配置中的大小写。默认供应商链之外、配置完整且项目支持的服务商也会返回。响应不会包含 API Key、Base URL 等其他配置内容，也不会连接上游服务检查模型或凭据状态。服务运行期间修改并成功热加载 `credentials.config` 后，该列表会立即更新，无需重启服务。
 
-使用 `auto` 模式的 provider，`/models` 返回最近一次自动发现到的模型列表（来自内存快照，不会往上游发请求）。
+使用 `auto` 模式的 provider，`/models` 将最近一次自动发现到的模型列表按模型名称的字符顺序排列后返回。该列表来自内存快照，不会往上游发请求。
 
 `POST /refresh-upstream-models` 立即对所有 `auto` 模式的 provider 重新执行模型发现，更新内存中的客户端和模型列表。返回各 provider 的发现结果摘要：
 
