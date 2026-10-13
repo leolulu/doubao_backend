@@ -2,12 +2,15 @@ import json
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
+from werkzeug.wsgi import ClosingIterator
 
 from api.api_factory import ManualModelSelectionError
 from models.session_manager import SessionManager
+from server.request_protection import RequestProtection, install_request_protection, load_protection_settings
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
+install_request_protection(app, RequestProtection(load_protection_settings()))
 sm = SessionManager()
 
 
@@ -131,6 +134,11 @@ def _stream_chat_using_parameters(id, system_message, user_message, preserve, pr
     except Exception:
         return "模型流式调用失败", 502
 
+    def close_stream():
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+
     @stream_with_context
     def generate():
         try:
@@ -149,11 +157,12 @@ def _stream_chat_using_parameters(id, system_message, user_message, preserve, pr
                 "message": "模型流式响应中断",
             })
         finally:
-            close = getattr(stream, "close", None)
-            if callable(close):
-                close()
+            close_stream()
 
-    response = Response(generate(), content_type="text/event-stream; charset=utf-8")
+    response = Response(
+        ClosingIterator(generate(), close_stream),
+        content_type="text/event-stream; charset=utf-8",
+    )
     response.headers["Cache-Control"] = "no-cache"
     response.headers["X-Accel-Buffering"] = "no"
     return response
