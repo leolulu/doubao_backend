@@ -83,7 +83,7 @@ def _validate_manual_selection_parameters(provider, model):
 
 def _chat_using_parameters(id, system_message, user_message, preserve, provider, model):
     if not user_message:
-        return "缺少必填参数: user_message", 400
+        return "缺少必填参数", 400
 
     validation_error = _validate_manual_selection_parameters(provider, model)
     if validation_error:
@@ -110,7 +110,7 @@ def _encode_sse_event(payload):
 
 def _stream_chat_using_parameters(id, system_message, user_message, preserve, provider, model):
     if not user_message:
-        return "缺少必填参数: user_message", 400
+        return "缺少必填参数", 400
 
     validation_error = _validate_manual_selection_parameters(provider, model)
     if validation_error:

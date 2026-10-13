@@ -222,7 +222,7 @@ class WebServerTest(unittest.TestCase):
         response = client.get("/")
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("user_message", response.get_data(as_text=True))
+        self.assertEqual(response.get_data(as_text=True), "缺少必填参数")
 
     def test_post_missing_user_message_returns_400(self) -> None:
         web_server = self.load_server_module()
@@ -233,7 +233,7 @@ class WebServerTest(unittest.TestCase):
                 response = client.post(path, json={})
 
                 self.assertEqual(response.status_code, 400)
-                self.assertIn("user_message", response.get_data(as_text=True))
+                self.assertEqual(response.get_data(as_text=True), "缺少必填参数")
 
         self.assertEqual(web_server.sm.requests, [])
 
