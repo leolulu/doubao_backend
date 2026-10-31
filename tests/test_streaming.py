@@ -160,6 +160,7 @@ class StreamingParserTest(unittest.TestCase):
         self.assertEqual(result, ["a", "b"])
         self.assertTrue(response.closed)
         self.assertTrue(post.call_args.kwargs["stream"])
+        self.assertEqual(post.call_args.kwargs["timeout"], (5.0, 90.0))
         self.assertTrue(post.call_args.kwargs["json"]["stream"])
         self.assertEqual(log_success.call_args.kwargs["response_body"], "ab")
 

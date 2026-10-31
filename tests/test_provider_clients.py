@@ -68,8 +68,8 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
     def test_deepseek_posts_expected_request_and_returns_content(self) -> None:
         calls = []
 
-        def post(url, headers, json):
-            calls.append((url, headers, json))
+        def post(url, headers, json, timeout):
+            calls.append((url, headers, json, timeout))
             return FakeResponse(200)
 
         with patch("api.deepseek.requests.post", side_effect=post):
@@ -79,6 +79,7 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(calls[0][0], "https://api.deepseek.com/chat/completions")
         self.assertEqual(calls[0][1]["Authorization"], "Bearer key")
         self.assertEqual(calls[0][2]["model"], "deepseek-chat")
+        self.assertEqual(calls[0][3], (5.0, 90.0))
 
         records = self.read_success_log()
         self.assertEqual(len(records), 1)
@@ -95,8 +96,8 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
     def test_modelscope_posts_expected_request_and_returns_content(self) -> None:
         calls = []
 
-        def post(url, headers, json):
-            calls.append((url, headers, json))
+        def post(url, headers, json, timeout):
+            calls.append((url, headers, json, timeout))
             return FakeResponse(200)
 
         with patch("api.modelscope.requests.post", side_effect=post):
@@ -110,8 +111,8 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
     def test_generic_chat_completion_posts_expected_request_and_returns_content(self) -> None:
         calls = []
 
-        def post(url, headers, json):
-            calls.append((url, headers, json))
+        def post(url, headers, json, timeout):
+            calls.append((url, headers, json, timeout))
             return FakeResponse(200)
 
         with patch("api.chat_completion.requests.post", side_effect=post):
@@ -143,8 +144,8 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
     def test_zhipu_uses_configured_endpoint_and_temperature(self) -> None:
         calls = []
 
-        def post(url, headers, json):
-            calls.append((url, headers, json))
+        def post(url, headers, json, timeout):
+            calls.append((url, headers, json, timeout))
             return FakeResponse(200)
 
         with patch("api.zhipu.requests.post", side_effect=post):
@@ -363,8 +364,8 @@ class KimiProviderTest(unittest.TestCase):
     def test_kimi_uses_anthropic_protocol_by_default(self) -> None:
         calls = []
 
-        def post(url, headers, json):
-            calls.append((url, headers, json))
+        def post(url, headers, json, timeout):
+            calls.append((url, headers, json, timeout))
             return FakeResponse(200, payload={
                 "content": [
                     {"type": "text", "text": "kimi-answer"}
@@ -392,8 +393,8 @@ class KimiProviderTest(unittest.TestCase):
     def test_kimi_openai_protocol_uses_openai_shape_and_user_agent(self) -> None:
         calls = []
 
-        def post(url, headers, json):
-            calls.append((url, headers, json))
+        def post(url, headers, json, timeout):
+            calls.append((url, headers, json, timeout))
             return FakeResponse(200)
 
         messages = [
@@ -519,7 +520,7 @@ class FakeArkCompletions:
     def __init__(self, calls) -> None:
         self.calls = calls
 
-    def create(self, model, messages, stream=False):
+    def create(self, model, messages, stream=False, timeout=None):
         if stream:
             self.calls.append((model, messages, stream))
             return FakeArkStream()
@@ -586,7 +587,7 @@ class DoubaoTest(unittest.TestCase):
 
     def test_doubao_logs_sdk_exception(self) -> None:
         class FailingArkCompletions:
-            def create(self, model, messages):
+            def create(self, model, messages, timeout=None):
                 raise RuntimeError("ark failed")
 
         class FailingArkChat:

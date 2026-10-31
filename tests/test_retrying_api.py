@@ -15,6 +15,7 @@ from api.retrying_api import (
     RetryEvent,
 )
 from api.streaming import IncompleteStreamError
+from api.timeouts import request_timeout
 
 
 class SequenceClient(BaseApi):
@@ -171,6 +172,80 @@ class RetryingApiTest(unittest.TestCase):
 
         self.assertEqual(client.calls, 1)
         self.assertEqual([event.will_retry for event in events], [False])
+
+    def test_429_is_not_retried(self) -> None:
+        events = []
+        client = SequenceClient([Exception("API 调用失败: 429, insufficient balance")])
+        retrying = RetryingApi(
+            "provider",
+            client,
+            max_retries=3,
+            failure_handlers=[events.append],
+            sleeper=lambda delay: None,
+        )
+
+        with self.assertRaisesRegex(Exception, "429"):
+            retrying.reason([])
+
+        self.assertEqual(client.calls, 1)
+        self.assertEqual([event.will_retry for event in events], [False])
+
+    def test_target_timeout_stops_retries_when_budget_runs_out(self) -> None:
+        now = [0.0]
+        events = []
+
+        class SlowFailClient(BaseApi):
+            calls = 0
+
+            def reason(self, messages: list[dict[str, str]]) -> str:
+                SlowFailClient.calls += 1
+                now[0] += 55.0
+                raise requests.exceptions.Timeout()
+
+        def sleeper(delay: float) -> None:
+            now[0] += delay
+
+        retrying = RetryingApi(
+            "provider",
+            SlowFailClient(),
+            max_retries=3,
+            retry_delay_seconds=5.0,
+            failure_handlers=[events.append],
+            sleeper=sleeper,
+            clock=lambda: now[0],
+            target_timeout_seconds=120.0,
+        )
+
+        with self.assertRaises(requests.exceptions.Timeout):
+            retrying.reason([])
+
+        self.assertEqual(SlowFailClient.calls, 2)
+        self.assertEqual([event.will_retry for event in events], [True, False])
+
+    def test_stream_stops_enforcing_deadline_after_first_chunk(self) -> None:
+        timeouts = []
+
+        class TimeoutAwareClient(BaseApi):
+            @typing.override
+            def reason(self, messages: list[dict[str, str]]) -> str:
+                return ""
+
+            @typing.override
+            def reason_stream(self, messages: list[dict[str, str]]):
+                timeouts.append(request_timeout())
+                yield "first"
+                timeouts.append(request_timeout())
+
+        retrying = RetryingApi(
+            "provider",
+            TimeoutAwareClient(),
+            target_timeout_seconds=30.0,
+        )
+
+        self.assertEqual(list(retrying.reason_stream([])), ["first"])
+        self.assertEqual(timeouts[0][0], 5.0)
+        self.assertAlmostEqual(timeouts[0][1], 30.0, places=1)
+        self.assertEqual(timeouts[1], (5.0, 90.0))
 
 
 class FeishuNotifierTest(unittest.TestCase):

@@ -7,6 +7,7 @@ from api.base_api import BaseApi
 from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
 from api.streaming import stream_chat_completion
+from api.timeouts import request_timeout
 
 
 class Kimi(BaseApi):
@@ -109,7 +110,7 @@ class Kimi(BaseApi):
         }
 
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=request_timeout())
         except requests.exceptions.RequestException as exception:
             log_llm_error_request("kimi", url, data, exception=exception)
             raise
@@ -162,7 +163,7 @@ class Kimi(BaseApi):
         data = self._build_anthropic_payload(messages)
 
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=request_timeout())
         except requests.exceptions.RequestException as exception:
             log_llm_error_request("kimi", url, data, exception=exception)
             raise

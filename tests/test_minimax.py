@@ -75,8 +75,8 @@ class MiniMaxTest(unittest.TestCase):
     def test_call_api_posts_expected_request(self) -> None:
         calls = []
 
-        def post(url, headers, json):
-            calls.append((url, headers, json))
+        def post(url, headers, json, timeout):
+            calls.append((url, headers, json, timeout))
             return FakeResponse(200, {"choices": []})
 
         client = MiniMax("key", "MiniMax-M2.5")

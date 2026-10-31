@@ -8,6 +8,7 @@ from api.base_api import BaseApi
 from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
 from api.streaming import stream_chat_completion
+from api.timeouts import request_timeout
 
 
 class MiniMax(BaseApi):
@@ -83,7 +84,7 @@ class MiniMax(BaseApi):
         }
 
         try:
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=request_timeout())
         except requests.exceptions.RequestException as exception:
             log_llm_error_request("minimax", url, data, exception=exception)
             raise

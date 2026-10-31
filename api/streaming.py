@@ -5,6 +5,7 @@ from typing import Any
 import requests
 
 from api.error_request_logger import log_llm_error_request, log_llm_success_request
+from api.timeouts import request_timeout
 
 
 class IncompleteStreamError(RuntimeError):
@@ -137,7 +138,7 @@ def stream_chat_completion(
 
     try:
         try:
-            response = requests.post(url, headers=headers, json=body, stream=True)
+            response = requests.post(url, headers=headers, json=body, stream=True, timeout=request_timeout())
         except requests.exceptions.RequestException as exception:
             log_llm_error_request(provider, url, body, exception=exception)
             raise

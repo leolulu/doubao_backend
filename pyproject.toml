@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "flask",
     "flask-cors",
+    "httpx",
     "requests",
     "volcengine-python-sdk[ark]",
     "watchfiles",

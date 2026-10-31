@@ -1,12 +1,14 @@
 from collections.abc import Iterator
 from typing import Dict, List
 
+from httpx import Timeout
 from volcenginesdkarkruntime import Ark
 
 from api.base_api import BaseApi
 from api.error_request_logger import log_llm_error_request, log_llm_success_request
 from api.param_schema import ParamType, ProviderParam
 from api.streaming import IncompleteStreamError
+from api.timeouts import request_timeout
 
 
 class Doubao(BaseApi):
@@ -32,13 +34,26 @@ class Doubao(BaseApi):
         self.access_point = access_point
         self.client = Ark(api_key=api_key)
 
+    def _request_timeout(self) -> Timeout:
+        """连接 5 秒、等待响应 90 秒；单目标预算不足时按剩余时间收紧。"""
+        connect_timeout, read_timeout = request_timeout()
+        return Timeout(
+            connect=connect_timeout,
+            read=read_timeout,
+            write=read_timeout,
+            pool=connect_timeout,
+        )
+
     def reason(self, messages: List[Dict[str, str]]) -> str:
         request_body = {
             "model": self.access_point,
             "messages": messages,
         }
         try:
-            completion = self.client.chat.completions.create(**request_body)
+            completion = self.client.chat.completions.create(
+                **request_body,
+                timeout=self._request_timeout(),
+            )
             response_content = completion.choices[0].message.content
         except Exception as exception:
             log_llm_error_request("doubao", "ark://chat/completions", request_body, exception=exception)
@@ -62,7 +77,10 @@ class Doubao(BaseApi):
         completed = False
 
         try:
-            completion = self.client.chat.completions.create(**request_body)
+            completion = self.client.chat.completions.create(
+                **request_body,
+                timeout=self._request_timeout(),
+            )
             for chunk in completion:
                 choices = getattr(chunk, "choices", None)
                 if not choices:

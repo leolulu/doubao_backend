@@ -8,6 +8,7 @@ import requests
 
 from api.base_api import BaseApi
 from api.streaming import IncompleteStreamError
+from api.timeouts import attempt_deadline, reset_attempt_deadline, set_attempt_deadline
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class ProviderFallbackEvent(FailureEvent):
 
 FailureHandler = Callable[[FailureEvent], None]
 Sleeper = Callable[[float], None]
+Clock = Callable[[], float]
 PostRequest = Callable[..., requests.Response]
 
 
@@ -203,9 +205,10 @@ class FeishuNotifier:
 class RetryingApi(BaseApi):
     """为所有服务商统一提供重试能力的透明代理。"""
 
-    DEFAULT_MAX_RETRIES: int = 5
+    DEFAULT_MAX_RETRIES: int = 3
     DEFAULT_RETRY_DELAY_SECONDS: float = 5.0
-    RETRYABLE_STATUS_CODES: set[int] = {408, 409, 425, 429, 500, 502, 503, 504}
+    DEFAULT_TARGET_TIMEOUT_SECONDS: float = 120.0
+    RETRYABLE_STATUS_CODES: set[int] = {408, 409, 425, 500, 502, 503, 504}
     STATUS_CODE_PATTERN: re.Pattern[str] = re.compile(r"(?<!\d)(\d{3})(?!\d)")
 
     def __init__(
@@ -216,6 +219,8 @@ class RetryingApi(BaseApi):
         retry_delay_seconds: float = DEFAULT_RETRY_DELAY_SECONDS,
         failure_handlers: list[FailureHandler] | None = None,
         sleeper: Sleeper = time.sleep,
+        clock: Clock = time.monotonic,
+        target_timeout_seconds: float = DEFAULT_TARGET_TIMEOUT_SECONDS,
     ) -> None:
         self.provider_name: str = provider_name
         self.client: BaseApi = client
@@ -223,68 +228,108 @@ class RetryingApi(BaseApi):
         self.retry_delay_seconds: float = retry_delay_seconds
         self.failure_handlers: list[FailureHandler] = failure_handlers or []
         self.sleeper: Sleeper = sleeper
+        self.clock: Clock = clock
+        self.target_timeout_seconds: float = target_timeout_seconds
 
     @override
     def reason(self, messages: list[dict[str, str]]) -> str:
+        deadline = self.clock() + self.target_timeout_seconds
+        last_exception: Exception | None = None
         for retry_count in range(self.max_retries + 1):
+            if retry_count > 0 and self._remaining_seconds(deadline) <= 0:
+                raise self._budget_exhausted(last_exception)
             try:
-                return self.client.reason(messages)
+                with attempt_deadline(deadline):
+                    return self.client.reason(messages)
             except Exception as exception:
-                will_retry = retry_count < self.max_retries and self._should_retry(exception)
+                last_exception = exception
+                retry_delay = self._retry_delay(retry_count, exception, deadline)
                 self._handle_failure(
                     RetryEvent(
                         provider_name=self.provider_name,
-                        will_retry=will_retry,
+                        will_retry=retry_delay is not None,
                         attempt_number=retry_count + 1,
                         max_retries=self.max_retries,
-                        delay_seconds=self.retry_delay_seconds if will_retry else 0,
+                        delay_seconds=retry_delay if retry_delay is not None else 0.0,
                         exception=exception,
                     )
                 )
-                if not will_retry:
+                if retry_delay is None:
                     raise
-                self.sleeper(self.retry_delay_seconds)
+                self.sleeper(retry_delay)
 
         raise RuntimeError("重试流程异常结束")
 
     @override
     def reason_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        deadline = self.clock() + self.target_timeout_seconds
+        last_exception: Exception | None = None
         for retry_count in range(self.max_retries + 1):
+            if retry_count > 0 and self._remaining_seconds(deadline) <= 0:
+                raise self._budget_exhausted(last_exception)
             yielded_content = False
             stream = None
+            deadline_active = True
+            token = set_attempt_deadline(deadline)
             try:
                 stream = self.client.reason_stream(messages)
                 for chunk in stream:
                     if not chunk:
                         continue
-                    yielded_content = True
+                    if not yielded_content:
+                        yielded_content = True
+                        # 已开始输出可见文本，不再受单目标时限约束，避免截断回答。
+                        reset_attempt_deadline(token)
+                        deadline_active = False
                     yield chunk
                 return
             except Exception as exception:
-                will_retry = (
-                    not yielded_content
-                    and retry_count < self.max_retries
-                    and self._should_retry(exception)
+                last_exception = exception
+                retry_delay = (
+                    None
+                    if yielded_content
+                    else self._retry_delay(retry_count, exception, deadline)
                 )
                 self._handle_failure(
                     RetryEvent(
                         provider_name=self.provider_name,
-                        will_retry=will_retry,
+                        will_retry=retry_delay is not None,
                         attempt_number=retry_count + 1,
                         max_retries=self.max_retries,
-                        delay_seconds=self.retry_delay_seconds if will_retry else 0,
+                        delay_seconds=retry_delay if retry_delay is not None else 0.0,
                         exception=exception,
                     )
                 )
-                if not will_retry:
+                if retry_delay is None:
                     raise
-                self.sleeper(self.retry_delay_seconds)
+                self.sleeper(retry_delay)
             finally:
+                if deadline_active:
+                    reset_attempt_deadline(token)
                 close = getattr(stream, "close", None)
                 if callable(close):
                     close()
 
-        raise RuntimeError("流式重试流程异常结束")
+    def _remaining_seconds(self, deadline: float) -> float:
+        return deadline - self.clock()
+
+    def _retry_delay(
+        self,
+        retry_count: int,
+        exception: Exception,
+        deadline: float,
+    ) -> float | None:
+        """本次失败后实际等待的时间；None 表示不再重试。"""
+        if retry_count >= self.max_retries or not self._should_retry(exception):
+            return None
+        if self._remaining_seconds(deadline) <= self.retry_delay_seconds:
+            return None
+        return self.retry_delay_seconds
+
+    def _budget_exhausted(self, last_exception: Exception | None) -> Exception:
+        if last_exception is not None:
+            return last_exception
+        return RuntimeError("重试流程异常结束")
 
     def _should_retry(self, exception: Exception) -> bool:
         if isinstance(exception, IncompleteStreamError):
