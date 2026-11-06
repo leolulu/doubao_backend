@@ -5,7 +5,7 @@ import threading
 import typing
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 if not hasattr(typing, "override"):
     typing.override = lambda func: func
@@ -18,7 +18,7 @@ from api.fallback_api import FallbackApi
 from api.kimi import Kimi
 from api.param_schema import ParamType, ProviderParam
 from api.provider_fallback_api import ProviderFallbackApi
-from api.retrying_api import ProviderSwitchEvent, RetryingApi
+from api.retrying_api import FeishuNotifier, RetryingApi
 from models.session_manager import SessionManager
 
 
@@ -457,28 +457,47 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertEqual(first_client.provider_name, "chat_completion:provider_name")
         self.assertEqual(first_client.base_url, "https://example.com/v1")
 
-    def test_provider_chain_sends_switch_notification_without_inner_fallback_notification(self) -> None:
-        events = []
-        factory = self.make_factory({
-            "p1": FailingProvider,
-            "p2": SuccessfulProvider,
-        })
-        factory._failure_handlers = [events.append]
-        factory._credentials.update({
-            "p1": {"api_key": "key-1", "model": "model-1,model-2"},
-            "p2": {"api_key": "key-2", "model": "model-3"},
-        })
-        factory._set_designated_providers(["p1", "p2"])
-        factory._register_designated_provider()
+    def test_provider_chain_sends_one_detailed_result_notification(self) -> None:
+        for backup, outcome in ((SuccessfulProvider, "成功"), (FailingProvider, "失败")):
+            with self.subTest(outcome=outcome):
+                post = Mock()
+                post.return_value.json.return_value = {"code": 0}
+                notifier = FeishuNotifier("https://open.feishu.cn/open-apis/bot/v2/hook/test", post)
+                factory = self.make_factory({"p1": FailingProvider, "p2": backup})
+                factory._failure_handlers = [notifier.notify_failure]
+                factory._credentials.update({
+                    "p1": {"api_key": "key-1", "model": "model-1,model-2"},
+                    "p2": {"api_key": "key-2", "model": "model-3,model-4"},
+                })
+                factory._set_designated_providers(["p1", "p2"])
+                factory._register_designated_provider()
 
-        result = factory.get_client().reason([])
+                client = factory.get_client()
+                if outcome == "成功":
+                    self.assertEqual(client.reason([]), "success:key-2:model-3")
+                else:
+                    with self.assertRaisesRegex(Exception, "key-2:model-4"):
+                        client.reason([])
 
-        self.assertEqual(result, "success:key-2:model-3")
-        self.assertEqual(len(events), 1)
-        self.assertIsInstance(events[0], ProviderSwitchEvent)
-        self.assertEqual(events[0].from_provider, "p1")
-        self.assertEqual(events[0].to_provider, "p2")
-        self.assertEqual(events[0].targets, ["model-1", "model-2"])
+                post.assert_called_once()
+                text = post.call_args.kwargs["json"]["content"]["text"]
+                self.assertIn(
+                    "大模型供应商已切换\n供应商回退链: p1 -> p2\n\n"
+                    "失败供应商: p1\n切换目标: p2\n失败链路: model-1 -> model-2\n失败明细:\n"
+                    "- model-1: Exception: [redacted]:model-1\n"
+                    "- model-2: Exception: [redacted]:model-2\n",
+                    text,
+                )
+                if outcome == "失败":
+                    self.assertIn(
+                        "失败供应商: p2\n失败链路: model-3 -> model-4\n失败明细:\n"
+                        "- model-3: Exception: [redacted]:model-3\n"
+                        "- model-4: Exception: [redacted]:model-4\n",
+                        text,
+                    )
+                self.assertTrue(text.endswith(f"最终供应商: p2\n最终结果: {outcome}"))
+                self.assertNotIn("key-1", text)
+                self.assertNotIn("key-2", text)
 
     def _write_credentials(self, content: str) -> None:
         with open("credentials.config", "w", encoding="utf-8") as config_file:

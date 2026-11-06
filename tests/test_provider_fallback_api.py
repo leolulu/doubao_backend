@@ -7,7 +7,7 @@ if not hasattr(typing, "override"):
 from api.base_api import BaseApi
 from api.fallback_api import FallbackApi, FallbackEntry
 from api.provider_fallback_api import ProviderFallbackApi, ProviderFallbackEntry
-from api.retrying_api import ProviderFallbackEvent, ProviderSwitchEvent
+from api.retrying_api import ProviderFallbackEvent
 
 
 class FailingClient(BaseApi):
@@ -38,7 +38,7 @@ class PartialStreamingClient(SuccessfulClient):
 
 
 class ProviderFallbackApiTest(unittest.TestCase):
-    def test_switches_provider_and_reports_failed_inner_targets(self) -> None:
+    def test_reports_success_after_multiple_provider_switches(self) -> None:
         events = []
         first_provider = FallbackApi(
             "p1",
@@ -48,28 +48,34 @@ class ProviderFallbackApiTest(unittest.TestCase):
             ],
             failure_handlers=[],
         )
-        second_provider = SuccessfulClient("from-p2")
+        third_provider = SuccessfulClient("from-p3")
+        unused_provider = SuccessfulClient()
         chain = ProviderFallbackApi(
             [
                 ProviderFallbackEntry("p1", first_provider),
-                ProviderFallbackEntry("p2", second_provider),
+                ProviderFallbackEntry("p2", FailingClient("p2-failed")),
+                ProviderFallbackEntry("p3", third_provider),
+                ProviderFallbackEntry("p4", unused_provider),
             ],
             failure_handlers=[events.append],
         )
 
         result = chain.reason([{"role": "user", "content": "hello"}])
 
-        self.assertEqual(result, "from-p2")
+        self.assertEqual(result, "from-p3")
         self.assertEqual(len(events), 1)
-        self.assertIsInstance(events[0], ProviderSwitchEvent)
-        self.assertEqual(events[0].from_provider, "p1")
-        self.assertEqual(events[0].to_provider, "p2")
-        self.assertEqual(events[0].targets, ["api_key#1:model-a", "api_key#1:model-b"])
-        self.assertEqual([str(exc) for exc in events[0].exceptions], ["p1-a", "p1-b"])
+        self.assertIsInstance(events[0], ProviderFallbackEvent)
+        self.assertEqual(events[0].providers, ["p1", "p2", "p3"])
+        self.assertEqual(events[0].outcome, "success")
+        self.assertEqual([str(exc) for exc in events[0].exceptions], ["p1-b", "p2-failed"])
+        first_failure = events[0].exceptions[0].fallback_event
+        self.assertEqual(first_failure.targets, ["api_key#1:model-a", "api_key#1:model-b"])
+        self.assertEqual([str(exc) for exc in first_failure.exceptions], ["p1-a", "p1-b"])
         self.assertEqual(events[0].secret_values, ("secret-a", "secret-a"))
-        self.assertEqual(second_provider.calls, 1)
+        self.assertEqual(third_provider.calls, 1)
+        self.assertEqual(unused_provider.calls, 0)
 
-    def test_all_providers_failed_reports_switches_and_final_failure(self) -> None:
+    def test_all_providers_failed_reports_only_final_failure(self) -> None:
         events = []
         first_provider = FallbackApi(
             "p1",
@@ -88,14 +94,19 @@ class ProviderFallbackApiTest(unittest.TestCase):
             failure_handlers=[events.append],
         )
 
-        with self.assertRaisesRegex(Exception, "p2-failed"):
-            chain.reason([])
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                events.clear()
+                with self.assertRaisesRegex(Exception, "p2-failed"):
+                    if streaming:
+                        list(chain.reason_stream([]))
+                    else:
+                        chain.reason([])
 
-        self.assertEqual([type(event) for event in events], [ProviderSwitchEvent, ProviderFallbackEvent])
-        self.assertEqual(events[0].from_provider, "p1")
-        self.assertEqual(events[0].to_provider, "p2")
-        self.assertEqual(events[1].providers, ["p1", "p2"])
-        self.assertEqual([str(exc) for exc in events[1].exceptions], ["p1-b", "p2-failed"])
+                self.assertEqual([type(event) for event in events], [ProviderFallbackEvent])
+                self.assertEqual(events[0].providers, ["p1", "p2"])
+                self.assertEqual(events[0].outcome, "failed")
+                self.assertEqual([str(exc) for exc in events[0].exceptions], ["p1-b", "p2-failed"])
 
     def test_returns_without_notification_when_first_provider_succeeds(self) -> None:
         events = []
@@ -128,7 +139,7 @@ class ProviderFallbackApiTest(unittest.TestCase):
 
         self.assertEqual(list(fallback.reason_stream([])), ["from-model-b"])
 
-    def test_provider_stream_switches_before_visible_content(self) -> None:
+    def test_provider_stream_reports_success_only_after_completion(self) -> None:
         events = []
         first_provider = FailingClient("HTTP 500")
         second_provider = SuccessfulClient("from-p2")
@@ -140,29 +151,58 @@ class ProviderFallbackApiTest(unittest.TestCase):
             failure_handlers=[events.append],
         )
 
-        self.assertEqual(list(chain.reason_stream([])), ["from-p2"])
-        self.assertEqual([type(event) for event in events], [ProviderSwitchEvent])
+        stream = chain.reason_stream([])
+        self.assertEqual(next(stream), "from-p2")
+        self.assertEqual(events, [])
+        with self.assertRaises(StopIteration):
+            next(stream)
+
+        self.assertEqual([type(event) for event in events], [ProviderFallbackEvent])
+        self.assertEqual(events[0].providers, ["p1", "p2"])
+        self.assertEqual(events[0].outcome, "success")
 
     def test_provider_stream_does_not_switch_after_visible_content(self) -> None:
         events = []
-        first_provider = PartialStreamingClient()
-        second_provider = SuccessfulClient("from-p2")
+        unused_provider = SuccessfulClient()
         chain = ProviderFallbackApi(
             [
-                ProviderFallbackEntry("p1", first_provider),
-                ProviderFallbackEntry("p2", second_provider),
+                ProviderFallbackEntry("p1", FailingClient("HTTP 500")),
+                ProviderFallbackEntry("p2", PartialStreamingClient()),
+                ProviderFallbackEntry("p3", unused_provider),
             ],
             failure_handlers=[events.append],
         )
 
         stream = chain.reason_stream([])
         self.assertEqual(next(stream), "partial")
+        self.assertEqual(events, [])
         with self.assertRaisesRegex(RuntimeError, "stream interrupted"):
             next(stream)
 
-        self.assertEqual(second_provider.calls, 0)
+        self.assertEqual(unused_provider.calls, 0)
         self.assertEqual([type(event) for event in events], [ProviderFallbackEvent])
-        self.assertEqual(events[0].providers, ["p1"])
+        self.assertEqual(events[0].providers, ["p1", "p2"])
+        self.assertEqual(events[0].outcome, "interrupted")
+        self.assertEqual([str(exc) for exc in events[0].exceptions], ["HTTP 500", "stream interrupted"])
+
+    def test_provider_stream_reports_early_close_after_switch(self) -> None:
+        events = []
+        chain = ProviderFallbackApi(
+            [
+                ProviderFallbackEntry("p1", FailingClient("HTTP 500")),
+                ProviderFallbackEntry("p2", SuccessfulClient("from-p2")),
+            ],
+            failure_handlers=[events.append],
+        )
+
+        stream = chain.reason_stream([])
+        self.assertEqual(next(stream), "from-p2")
+        self.assertEqual(events, [])
+        stream.close()
+
+        self.assertEqual([type(event) for event in events], [ProviderFallbackEvent])
+        self.assertEqual(events[0].providers, ["p1", "p2"])
+        self.assertEqual(events[0].outcome, "cancelled")
 
 
 if __name__ == "__main__":

@@ -805,7 +805,7 @@ PROVIDER = doubao,zhipu,deepseek  # 按从左到右的优先级配置供应商�
 
 `PROVIDER` 仍然支持旧的单供应商写法，例如 `PROVIDER = doubao`。如果写多个供应商，系统启动时会立即校验所有供应商名称和对应配置段，避免运行到回退时才发现后续供应商配置错误。热更新时也会按同样规则校验整条链。
 
-供应商回退顺序按逗号从左到右执行。例如 `PROVIDER = doubao,zhipu,deepseek` 时，会先尝试豆包；豆包内部所有 `API_KEY` 和 `ACCESS_POINT` 组合都失败后，会发送飞书供应商切换通知，然后切换到智谱；所有供应商都失败后，会发送最终失败通知。
+供应商回退顺序按逗号从左到右执行。例如 `PROVIDER = doubao,zhipu,deepseek` 时，先尝试豆包。豆包内部所有 `API_KEY` 和 `ACCESS_POINT` 组合都失败后，再尝试智谱，依此类推。发生供应商切换后，飞书在请求结束时发送一条通知，列出实际回退链、逐模型失败明细、最终供应商和结果。
 
 创建新会话时，请求参数 `provider` 会覆盖默认供应商链。传入 `provider=zhipu` 时，该会话只使用智谱，不会走 `PROVIDER` 里的多供应商回退链。同一 `id` 的会话创建后会复用原有客户端，后续请求传入不同的 `provider` 不会切换服务商；热更新后也是如此，旧会话不会自动改绑。
 
@@ -843,7 +843,7 @@ MODEL = model-a,model-b
 USE_CODING_ENDPOINT = False
 ```
 
-备用链的尝试顺序是先按 `API_KEY`，再按 `MODEL` 或 `ACCESS_POINT`。例如 `API_KEY = key-a,key-b` 且 `MODEL = model-a,model-b` 时，依次尝试 `key-a` + `model-a`、`key-a` + `model-b`、`key-b` + `model-a`、`key-b` + `model-b`。每个组合独立重试，并受下面的超时与时间预算约束。单供应商模式下，所有组合失败后会发送飞书失败通知；多供应商模式下，当前供应商所有组合失败后会由外层供应商回退链发送切换通知，并继续尝试下一个供应商。
+备用链的尝试顺序是先按 `API_KEY`，再按 `MODEL` 或 `ACCESS_POINT`。例如 `API_KEY = key-a,key-b` 且 `MODEL = model-a,model-b` 时，依次尝试 `key-a` + `model-a`、`key-a` + `model-b`、`key-b` + `model-a`、`key-b` + `model-b`。每个组合独立重试，并受下面的超时与时间预算约束。单供应商模式下，所有组合失败后会发送飞书失败通知。多供应商模式下，当前供应商所有组合失败后会尝试下一个供应商，由外层供应商回退链在请求结束时发送通知。
 
 逗号两侧可以有空格，程序会自动去掉空白。不要留下空项，例如 `key-a,,key-b`、`model-a,`、`,model-a` 都是无效写法。
 
