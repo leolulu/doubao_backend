@@ -1,5 +1,6 @@
 import typing
 import unittest
+from json import JSONDecodeError
 
 if not hasattr(typing, "override"):
     typing.override = lambda func: func
@@ -101,6 +102,26 @@ class RetryingApiTest(unittest.TestCase):
         self.assertIsInstance(events[0], RetryEvent)
         self.assertFalse(events[0].will_retry)
 
+    def test_retries_invalid_json_response_until_success(self) -> None:
+        events = []
+        response = requests.Response()
+        response._content = b'{"choices": ['
+        with self.assertRaises(requests.exceptions.JSONDecodeError) as parsing_error:
+            response.json()
+
+        client = SequenceClient([parsing_error.exception, "ok"])
+        retrying = RetryingApi(
+            "provider",
+            client,
+            max_retries=1,
+            retry_delay_seconds=0,
+            failure_handlers=[events.append],
+        )
+
+        self.assertEqual(retrying.reason([]), "ok")
+        self.assertEqual(client.calls, 2)
+        self.assertEqual([event.will_retry for event in events], [True])
+
     def test_retryable_exception_reports_final_failure_after_retries(self) -> None:
         events = []
         client = SequenceClient([requests.exceptions.Timeout(), requests.exceptions.Timeout()])
@@ -137,41 +158,47 @@ class RetryingApiTest(unittest.TestCase):
         self.assertEqual([event.will_retry for event in events], [True])
 
     def test_stream_retries_incomplete_response_before_content(self) -> None:
-        client = StreamingSequenceClient([
+        errors = (
             IncompleteStreamError("incomplete"),
-            ["ok"],
-        ])
-        retrying = RetryingApi(
-            "provider",
-            client,
-            max_retries=1,
-            retry_delay_seconds=0,
+            JSONDecodeError("Expecting value", '{"choices": [', 13),
         )
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                client = StreamingSequenceClient([error, ["ok"]])
+                retrying = RetryingApi(
+                    "provider",
+                    client,
+                    max_retries=1,
+                    retry_delay_seconds=0,
+                )
 
-        self.assertEqual(list(retrying.reason_stream([])), ["ok"])
-        self.assertEqual(client.calls, 2)
+                self.assertEqual(list(retrying.reason_stream([])), ["ok"])
+                self.assertEqual(client.calls, 2)
 
     def test_stream_does_not_retry_after_visible_chunk(self) -> None:
-        events = []
-        client = StreamingSequenceClient([
-            ["partial", requests.exceptions.Timeout()],
-            ["second-attempt"],
-        ])
-        retrying = RetryingApi(
-            "provider",
-            client,
-            max_retries=1,
-            retry_delay_seconds=0,
-            failure_handlers=[events.append],
+        errors = (
+            requests.exceptions.Timeout(),
+            JSONDecodeError("Expecting value", '{"choices": [', 13),
         )
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                events = []
+                client = StreamingSequenceClient([["partial", error], ["second-attempt"]])
+                retrying = RetryingApi(
+                    "provider",
+                    client,
+                    max_retries=1,
+                    retry_delay_seconds=0,
+                    failure_handlers=[events.append],
+                )
 
-        stream = retrying.reason_stream([])
-        self.assertEqual(next(stream), "partial")
-        with self.assertRaises(requests.exceptions.Timeout):
-            next(stream)
+                stream = retrying.reason_stream([])
+                self.assertEqual(next(stream), "partial")
+                with self.assertRaises(type(error)):
+                    next(stream)
 
-        self.assertEqual(client.calls, 1)
-        self.assertEqual([event.will_retry for event in events], [False])
+                self.assertEqual(client.calls, 1)
+                self.assertEqual([event.will_retry for event in events], [False])
 
     def test_429_is_not_retried(self) -> None:
         events = []

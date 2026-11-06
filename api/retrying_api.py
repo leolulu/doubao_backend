@@ -2,6 +2,7 @@ import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
+from json import JSONDecodeError
 from typing import Callable, Literal, cast, override
 
 import requests
@@ -349,7 +350,7 @@ class RetryingApi(BaseApi):
         return RuntimeError("重试流程异常结束")
 
     def _should_retry(self, exception: Exception) -> bool:
-        if isinstance(exception, IncompleteStreamError):
+        if isinstance(exception, (IncompleteStreamError, JSONDecodeError, requests.exceptions.JSONDecodeError)):
             return True
         if isinstance(exception, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
             return True
