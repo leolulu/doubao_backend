@@ -3,11 +3,14 @@ from dataclasses import dataclass
 from typing import override
 
 from api.base_api import BaseApi
+from api.fallback_api import FallbackApi
 from api.retrying_api import (
     FailureHandler,
     FallbackEvent,
+    ModelFallbackResult,
     ProviderFallbackEvent,
     ProviderFallbackOutcome,
+    RetryingApi,
 )
 
 
@@ -37,13 +40,20 @@ class ProviderFallbackApi(BaseApi):
         exceptions: list[Exception] = []
         for entry in self.entries:
             providers.append(entry.provider_name)
+            client = entry.client
+            model_result = ModelFallbackResult(
+                model=client.model if isinstance(client, RetryingApi) else None,
+            )
             try:
-                result = entry.client.reason(messages)
+                if isinstance(client, FallbackApi):
+                    result = client.reason(messages, model_result=model_result)
+                else:
+                    result = client.reason(messages)
             except Exception as exception:
                 exceptions.append(exception)
             else:
                 if exceptions:
-                    self._report_result(providers, exceptions, outcome="success")
+                    self._report_result(providers, exceptions, outcome="success", model_result=model_result)
                 return result
 
         self._report_result(providers, exceptions, outcome="failed")
@@ -54,14 +64,22 @@ class ProviderFallbackApi(BaseApi):
         providers: list[str] = []
         exceptions: list[Exception] = []
         outcome: ProviderFallbackOutcome = "failed"
+        model_result: ModelFallbackResult | None = None
 
         try:
             for entry in self.entries:
                 providers.append(entry.provider_name)
+                client = entry.client
+                model_result = ModelFallbackResult(
+                    model=client.model if isinstance(client, RetryingApi) else None,
+                )
                 yielded_content = False
                 stream = None
                 try:
-                    stream = entry.client.reason_stream(messages)
+                    if isinstance(client, FallbackApi):
+                        stream = client.reason_stream(messages, model_result=model_result)
+                    else:
+                        stream = client.reason_stream(messages)
                     for chunk in stream:
                         if not chunk:
                             continue
@@ -85,7 +103,12 @@ class ProviderFallbackApi(BaseApi):
             raise
         finally:
             if exceptions:
-                self._report_result(providers, exceptions, outcome=outcome)
+                self._report_result(
+                    providers,
+                    exceptions,
+                    outcome=outcome,
+                    model_result=model_result if outcome == "success" else None,
+                )
 
     def _report_result(
         self,
@@ -93,6 +116,7 @@ class ProviderFallbackApi(BaseApi):
         exceptions: list[Exception],
         *,
         outcome: ProviderFallbackOutcome,
+        model_result: ModelFallbackResult | None = None,
     ) -> None:
         event = ProviderFallbackEvent(
             provider_name=self.provider_name,
@@ -101,6 +125,7 @@ class ProviderFallbackApi(BaseApi):
             exceptions=exceptions,
             secret_values=self._collect_secret_values(exceptions),
             outcome=outcome,
+            model_result=model_result,
         )
         for handler in self.failure_handlers:
             try:

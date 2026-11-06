@@ -55,9 +55,11 @@ class FailingProvider(FakeProvider):
         raise Exception(f"{self.api_key}:{self.model}")
 
 
-class SuccessfulProvider(FakeProvider):
+class SelectiveProvider(FailingProvider):
     def reason(self, messages: list[dict[str, str]]) -> str:
-        return f"success:{self.api_key}:{self.model}"
+        if self.model == "model-5":
+            return f"success:{self.api_key}:{self.model}"
+        return super().reason(messages)
 
 
 class ApiFactoryProviderChainTest(unittest.TestCase):
@@ -458,26 +460,37 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
         self.assertEqual(first_client.base_url, "https://example.com/v1")
 
     def test_provider_chain_sends_one_detailed_result_notification(self) -> None:
-        for backup, outcome in ((SuccessfulProvider, "成功"), (FailingProvider, "失败")):
-            with self.subTest(outcome=outcome):
+        cases = (
+            ("model-3,model-4,model-5,model-6", "model-5", False),
+            ("model-3,model-4,model-5,model-6", "model-5", True),
+            ("model-5", "model-5", False),
+            ("model-3,model-4", None, False),
+        )
+        for models, successful_model, streaming in cases:
+            with self.subTest(models=models, streaming=streaming):
                 post = Mock()
                 post.return_value.json.return_value = {"code": 0}
                 notifier = FeishuNotifier("https://open.feishu.cn/open-apis/bot/v2/hook/test", post)
-                factory = self.make_factory({"p1": FailingProvider, "p2": backup})
+                factory = self.make_factory({"p1": FailingProvider, "p2": SelectiveProvider})
                 factory._failure_handlers = [notifier.notify_failure]
                 factory._credentials.update({
                     "p1": {"api_key": "key-1", "model": "model-1,model-2"},
-                    "p2": {"api_key": "key-2", "model": "model-3,model-4"},
+                    "p2": {"api_key": "key-2", "model": models},
                 })
                 factory._set_designated_providers(["p1", "p2"])
                 factory._register_designated_provider()
 
                 client = factory.get_client()
-                if outcome == "成功":
-                    self.assertEqual(client.reason([]), "success:key-2:model-3")
-                else:
+                if successful_model is None:
                     with self.assertRaisesRegex(Exception, "key-2:model-4"):
                         client.reason([])
+                elif streaming:
+                    stream = client.reason_stream([])
+                    self.assertEqual(next(stream), f"success:key-2:{successful_model}")
+                    post.assert_not_called()
+                    self.assertEqual(list(stream), [])
+                else:
+                    self.assertEqual(client.reason([]), f"success:key-2:{successful_model}")
 
                 post.assert_called_once()
                 text = post.call_args.kwargs["json"]["content"]["text"]
@@ -488,14 +501,21 @@ class ApiFactoryProviderChainTest(unittest.TestCase):
                     "- model-2: Exception: [redacted]:model-2\n",
                     text,
                 )
-                if outcome == "失败":
+                if models.startswith("model-3"):
+                    supplier_label = "失败供应商" if successful_model is None else "最终供应商"
                     self.assertIn(
-                        "失败供应商: p2\n失败链路: model-3 -> model-4\n失败明细:\n"
+                        f"{supplier_label}: p2\n"
+                        "失败链路: model-3 -> model-4\n失败明细:\n"
                         "- model-3: Exception: [redacted]:model-3\n"
                         "- model-4: Exception: [redacted]:model-4\n",
                         text,
                     )
-                self.assertTrue(text.endswith(f"最终供应商: p2\n最终结果: {outcome}"))
+                if successful_model is None:
+                    self.assertTrue(text.endswith("最终供应商: p2\n最终结果: 失败"))
+                else:
+                    self.assertIn("最终供应商: p2\n", text)
+                    self.assertTrue(text.endswith(f"最终模型: {successful_model}\n最终结果: 成功"))
+                self.assertNotIn("model-6", text)
                 self.assertNotIn("key-1", text)
                 self.assertNotIn("key-2", text)
 

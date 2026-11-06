@@ -707,7 +707,14 @@ class ApiFactory:
         if isinstance(client, (RetryingApi, FallbackApi, ProviderFallbackApi)):
             return client
         handlers = self._failure_handlers if failure_handlers is None else failure_handlers
-        return RetryingApi(name, client, failure_handlers=handlers)
+        target_param = self._get_target_param_name(type(client))
+        model = getattr(client, target_param, None) if target_param is not None else None
+        return RetryingApi(
+            name,
+            client,
+            failure_handlers=handlers,
+            model=model if isinstance(model, str) else None,
+        )
 
     def register_provider(self, name: str, client: BaseApi):
         if not isinstance(client, BaseApi):

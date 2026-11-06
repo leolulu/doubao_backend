@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import override
 
 from api.base_api import BaseApi
-from api.retrying_api import FailureHandler, FallbackEvent
+from api.retrying_api import FailureHandler, FallbackEvent, ModelFallbackResult, RetryingApi
 
 
 @dataclass(frozen=True)
@@ -31,32 +31,38 @@ class FallbackApi(BaseApi):
         self.failure_handlers: list[FailureHandler] = failure_handlers or []
 
     @override
-    def reason(self, messages: list[dict[str, str]]) -> str:
+    def reason(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model_result: ModelFallbackResult | None = None,
+    ) -> str:
         exceptions: list[Exception] = []
         for entry in self.entries:
             try:
-                return entry.client.reason(messages)
+                response = entry.client.reason(messages)
             except Exception as exception:
                 exceptions.append(exception)
+            else:
+                if model_result is not None:
+                    self._record_success(model_result, entry, exceptions)
+                return response
 
-        event = FallbackEvent(
-            provider_name=self.provider_name,
-            will_retry=False,
-            targets=[entry.target for entry in self.entries],
-            exceptions=exceptions,
-            secret_values=tuple(secret for entry in self.entries for secret in entry.secrets),
-        )
+        event = self._build_failure_event(exceptions)
         self._handle_failure(event)
         self._attach_fallback_event(exceptions[-1], event)
         raise exceptions[-1]
 
     @override
-    def reason_stream(self, messages: list[dict[str, str]]) -> Iterator[str]:
+    def reason_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        model_result: ModelFallbackResult | None = None,
+    ) -> Iterator[str]:
         exceptions: list[Exception] = []
-        attempted_entries: list[FallbackEntry] = []
 
         for entry in self.entries:
-            attempted_entries.append(entry)
             yielded_content = False
             stream = None
             try:
@@ -66,30 +72,43 @@ class FallbackApi(BaseApi):
                         continue
                     yielded_content = True
                     yield chunk
-                return
             except Exception as exception:
                 exceptions.append(exception)
                 if yielded_content:
                     break
+            else:
+                if model_result is not None:
+                    self._record_success(model_result, entry, exceptions)
+                return
             finally:
                 close = getattr(stream, "close", None)
                 if callable(close):
                     close()
 
-        event = FallbackEvent(
-            provider_name=self.provider_name,
-            will_retry=False,
-            targets=[entry.target for entry in attempted_entries],
-            exceptions=exceptions,
-            secret_values=tuple(
-                secret
-                for entry in attempted_entries
-                for secret in entry.secrets
-            ),
-        )
+        event = self._build_failure_event(exceptions)
         self._handle_failure(event)
         self._attach_fallback_event(exceptions[-1], event)
         raise exceptions[-1]
+
+    def _record_success(
+        self,
+        model_result: ModelFallbackResult,
+        entry: FallbackEntry,
+        exceptions: list[Exception],
+    ) -> None:
+        client = entry.client
+        model_result.model = client.model if isinstance(client, RetryingApi) else None
+        model_result.failed_attempts = self._build_failure_event(exceptions) if exceptions else None
+
+    def _build_failure_event(self, exceptions: list[Exception]) -> FallbackEvent:
+        failed_entries = self.entries[:len(exceptions)]
+        return FallbackEvent(
+            provider_name=self.provider_name,
+            will_retry=False,
+            targets=[entry.target for entry in failed_entries],
+            exceptions=exceptions,
+            secret_values=tuple(secret for entry in failed_entries for secret in entry.secrets),
+        )
 
     def _handle_failure(self, event: FallbackEvent) -> None:
         for handler in self.failure_handlers:

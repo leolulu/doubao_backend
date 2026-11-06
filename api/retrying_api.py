@@ -29,11 +29,19 @@ class RetryEvent(FailureEvent):
 
 @dataclass(frozen=True)
 class FallbackEvent(FailureEvent):
-    """整条回退链彻底失败时的统一事件。"""
+    """记录模型回退中失败的目标和异常。"""
 
     targets: list[str]
     exceptions: list[Exception]
     secret_values: tuple[str, ...] = ()
+
+
+@dataclass
+class ModelFallbackResult:
+    """Model and earlier failed attempts for one successful provider call."""
+
+    model: str | None = None
+    failed_attempts: FallbackEvent | None = None
 
 
 ProviderFallbackOutcome = Literal["success", "failed", "interrupted", "cancelled"]
@@ -47,6 +55,7 @@ class ProviderFallbackEvent(FailureEvent):
     exceptions: list[Exception]
     secret_values: tuple[str, ...] = ()
     outcome: ProviderFallbackOutcome = "failed"
+    model_result: ModelFallbackResult | None = None
 
 
 FailureHandler = Callable[[FailureEvent], None]
@@ -163,20 +172,38 @@ class FeishuNotifier:
             else:
                 targets = [provider]
                 exceptions = [exception]
-            lines.extend((f"失败链路: {' -> '.join(targets)}", "失败明细:"))
-            for target, target_exception in zip(targets, exceptions):
-                lines.append(
-                    f"- {target}: {type(target_exception).__name__}: "
-                    f"{self._format_reason(target_exception, event.secret_values)}"
-                )
+            lines.extend(self._format_model_failures(targets, exceptions, event.secret_values))
         outcome = {
             "success": "成功",
             "failed": "失败",
             "interrupted": "失败（流式输出中断）",
             "cancelled": "未完成（流式请求提前关闭）",
         }[event.outcome]
-        lines.extend(("", f"最终供应商: {providers[-1]}", f"最终结果: {outcome}"))
+        lines.extend(("", f"最终供应商: {providers[-1]}"))
+        model_result = event.model_result
+        if model_result is not None:
+            failed_attempts = model_result.failed_attempts
+            if failed_attempts is not None:
+                lines.extend(self._format_model_failures(
+                    failed_attempts.targets,
+                    failed_attempts.exceptions,
+                    event.secret_values + failed_attempts.secret_values,
+                ))
+            if model_result.model is not None:
+                lines.append(f"最终模型: {model_result.model}")
+        lines.append(f"最终结果: {outcome}")
         return "\n".join(lines)
+
+    def _format_model_failures(
+        self,
+        targets: list[str],
+        exceptions: list[Exception],
+        secret_values: tuple[str, ...],
+    ) -> list[str]:
+        lines = [f"失败链路: {' -> '.join(targets)}", "失败明细:"]
+        for target, exception in zip(targets, exceptions):
+            lines.append(f"- {target}: {type(exception).__name__}: {self._format_reason(exception, secret_values)}")
+        return lines
 
     def _format_reason(self, exception: Exception, secret_values: tuple[str, ...] = ()) -> str:
         reason = str(exception).strip()
@@ -208,9 +235,12 @@ class RetryingApi(BaseApi):
         sleeper: Sleeper = time.sleep,
         clock: Clock = time.monotonic,
         target_timeout_seconds: float = DEFAULT_TARGET_TIMEOUT_SECONDS,
+        *,
+        model: str | None = None,
     ) -> None:
         self.provider_name: str = provider_name
         self.client: BaseApi = client
+        self.model: str | None = model
         self.max_retries: int = max_retries
         self.retry_delay_seconds: float = retry_delay_seconds
         self.failure_handlers: list[FailureHandler] = failure_handlers or []
