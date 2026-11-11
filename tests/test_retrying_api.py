@@ -63,11 +63,16 @@ class RetryingApiTest(unittest.TestCase):
     def test_retries_retryable_exception_until_success(self) -> None:
         events = []
         sleeps = []
-        client = SequenceClient([Exception("HTTP 500"), Exception("HTTP 502"), "ok"])
+        client = SequenceClient([
+            Exception("HTTP 500"),
+            Exception("HTTP 502"),
+            Exception('Chat Completion API call failed: 567, {"error":{"code":"rate_limit_exceeded"}}'),
+            "ok",
+        ])
         retrying = RetryingApi(
             "provider",
             client,
-            max_retries=2,
+            max_retries=3,
             retry_delay_seconds=0.25,
             failure_handlers=[events.append],
             sleeper=sleeps.append,
@@ -76,10 +81,10 @@ class RetryingApiTest(unittest.TestCase):
         result = retrying.reason([])
 
         self.assertEqual(result, "ok")
-        self.assertEqual(client.calls, 3)
-        self.assertEqual(sleeps, [0.25, 0.25])
-        self.assertEqual([event.will_retry for event in events], [True, True])
-        self.assertEqual([event.attempt_number for event in events], [1, 2])
+        self.assertEqual(client.calls, 4)
+        self.assertEqual(sleeps, [0.25, 0.25, 0.25])
+        self.assertEqual([event.will_retry for event in events], [True, True, True])
+        self.assertEqual([event.attempt_number for event in events], [1, 2, 3])
 
     def test_non_retryable_exception_fails_without_sleep(self) -> None:
         events = []

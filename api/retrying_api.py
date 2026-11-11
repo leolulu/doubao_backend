@@ -223,7 +223,8 @@ class RetryingApi(BaseApi):
     DEFAULT_MAX_RETRIES: int = 3
     DEFAULT_RETRY_DELAY_SECONDS: float = 5.0
     DEFAULT_TARGET_TIMEOUT_SECONDS: float = 120.0
-    RETRYABLE_STATUS_CODES: set[int] = {408, 409, 425, 500, 502, 503, 504}
+    # 部分中转用 HTTP 567 表示上游分组负载饱和。
+    RETRYABLE_STATUS_CODES: set[int] = {408, 409, 425, 500, 502, 503, 504, 567}
     STATUS_CODE_PATTERN: re.Pattern[str] = re.compile(r"(?<!\d)(\d{3})(?!\d)")
 
     def __init__(
